@@ -4,7 +4,10 @@ on:
   push:
     tags:
       - "v*"
+  pull_request:
+    branches: [ main ]
   workflow_dispatch:
+
 
 permissions:
   contents: write
@@ -49,7 +52,6 @@ jobs:
               --hidden-import qfluentwidgets
           fi
 
-      # ZIP inkl. README & LICENSE erstellen; EXE-Name bleibt "DIM-Creator.exe"
       - name: Prepare release bundle (zip + docs)
         shell: pwsh
         run: |
