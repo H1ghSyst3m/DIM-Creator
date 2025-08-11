@@ -2,10 +2,9 @@ name: Build & Release (Windows)
 
 on:
   push:
-    branches: [ add/pyinstaller-workflow ]  # << dein Branchname
+    tags:
+      - "v*"
   workflow_dispatch:
-  release:
-    types: [published]
 
 permissions:
   contents: write
@@ -50,22 +49,48 @@ jobs:
               --hidden-import qfluentwidgets
           fi
 
-      - name: Rename output with version
-        shell: bash
+      # ZIP inkl. README & LICENSE erstellen; EXE-Name bleibt "DIM-Creator.exe"
+      - name: Prepare release bundle (zip + docs)
+        shell: pwsh
         run: |
-          VER="${GITHUB_REF_NAME:-dev}"
-          [ -f dist/DIM-Creator.exe ] && mv dist/DIM-Creator.exe "dist/DIM-Creator_${VER}_win-x64.exe" || true
+          $ver = $env:GITHUB_REF_NAME
+          if (-not $ver) { $ver = "dev-$($env:GITHUB_SHA.Substring(0,7))" }
+
+          if (-not (Test-Path "dist/DIM-Creator.exe")) {
+            throw "dist/DIM-Creator.exe nicht gefunden (Build fehlgeschlagen oder Pfad anders?)."
+          }
+
+          # README & LICENSE in dist/ bereitstellen (falls vorhanden)
+          if (Test-Path "README.md") { Copy-Item -Force "README.md" "dist/README.md" }
+          if (Test-Path "LICENSE")   { Copy-Item -Force "LICENSE"   "dist/LICENSE" }
+
+          # ZIP bauen
+          $zipPath = "dist/DIM-Creator_${ver}_win-x64.zip"
+          if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+
+          $zipSources = @("dist/DIM-Creator.exe")
+          if (Test-Path "dist/README.md") { $zipSources += "dist/README.md" }
+          if (Test-Path "dist/LICENSE")   { $zipSources += "dist/LICENSE" }
+
+          Compress-Archive -Path $zipSources -DestinationPath $zipPath -Force
+
+          Write-Host "ZIP erstellt: $zipPath"
+          Get-ChildItem dist | Format-Table -AutoSize
 
       - name: Upload artifact (CI)
         uses: actions/upload-artifact@v4
         with:
           name: dim-creator-windows
-          path: dist/*.exe
+          path: |
+            dist/DIM-Creator.exe
+            dist/*.zip
           if-no-files-found: error
 
       - name: Attach to Release (on tags)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.exe
+          files: |
+            dist/DIM-Creator.exe
+            dist/*.zip
           generate_release_notes: true
