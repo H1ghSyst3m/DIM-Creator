@@ -1,0 +1,70 @@
+name: Build & Release (Windows)
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: pip-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            pip-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build with PyInstaller
+        shell: bash
+        run: |
+          if [ -f "DIM-Creator.spec" ]; then
+            pyinstaller -y DIM-Creator.spec
+          else
+            pyinstaller app.py \
+              --noconfirm --onefile --noconsole \
+              --name DIM-Creator \
+              --add-data "assets;assets" \
+              --icon "assets/images/logo/x128.ico" \
+              --hidden-import qfluentwidgets
+          fi
+
+      - name: Rename output with version
+        shell: bash
+        run: |
+          VER="${GITHUB_REF_NAME:-dev}"
+          [ -f dist/DIM-Creator.exe ] && mv dist/DIM-Creator.exe "dist/DIM-Creator_${VER}_win-x64.exe" || true
+
+      - name: Upload artifact (CI)
+        uses: actions/upload-artifact@v4
+        with:
+          name: dim-creator-windows
+          path: dist/*.exe
+          if-no-files-found: error
+
+      - name: Attach to Release (on tags)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.exe
+          generate_release_notes: true
