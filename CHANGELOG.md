@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## v1.2.0 - 2025-08-17
+### Changed
+- Code cleanup and maintenance improvements:
+  - Removed redundant comments from DIMPackageGUI initialization to improve code readability.
+  - Enhanced code organization and maintainability.
+
 ## v1.1.2
 ### Added
 - Live ZIP filename preview (bottom-right footer). Updates in real time as you change Store/Auto Prefix, Prefix, SKU, Part, or Product Name.
