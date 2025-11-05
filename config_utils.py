@@ -6,6 +6,7 @@ from logger_utils import get_logger
 
 log = get_logger(__name__)
 
+
 def update_configuration(
     config_path: str,
     default_data: Dict,
@@ -208,8 +209,8 @@ def load_configurations(doc_main_dir: str) -> Tuple[List[str], Dict[str, str], L
         ]
     }
 
-    stores_path  = os.path.join(config_path, 'store_data.json')
-    tags_path    = os.path.join(config_path, 'product_tags.json')
+    stores_path = os.path.join(config_path, 'store_data.json')
+    tags_path = os.path.join(config_path, 'product_tags.json')
     folders_path = os.path.join(config_path, 'daz_folders.json')
 
     store_items = update_configuration(stores_path,  default_store_data,   config_version, True)

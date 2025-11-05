@@ -12,7 +12,8 @@ from version import APP_VERSION
 try:
     from utils import documents_dir
 except Exception:
-    documents_dir = lambda: os.path.join(os.path.expanduser("~"), "Documents")
+    def documents_dir():
+        return os.path.join(os.path.expanduser("~"), "Documents")
 
 
 APP_NAME = "DIMCreator"
@@ -97,7 +98,7 @@ def _make_console_handler():
 
 
 def init_logging(level: str = ENV_LEVEL):
-    global logger, queue_listener
+    global queue_listener
 
     log_dir = _ensure_logs_dir()
     file_fmt, console_fmt = _build_formatters()
@@ -155,8 +156,9 @@ def _shutdown_logging():
 
 def set_level(level: str):
     lvl = getattr(logging, level.upper(), logging.INFO)
-    logging.getLogger(APP_NAME).setLevel(lvl)
-    logger.info("Logging level changed to %s", level.upper())
+    log = logging.getLogger(APP_NAME)
+    log.setLevel(lvl)
+    log.info("Logging level changed to %s", level.upper())
 
 
 def get_logger(name: Optional[str] = None) -> logging.Logger:
@@ -189,4 +191,5 @@ def _install_excepthook():
 
 
 init_logging(ENV_LEVEL)
-logger.info("%s started", APP_NAME)
+log = logging.getLogger(APP_NAME)
+log.info("%s started", APP_NAME)

@@ -30,11 +30,12 @@ from logger_utils import get_logger
 
 log = get_logger(__name__)
 
+
 class ProductLineEdit(LineEdit):
     def __init__(self, parent=None):
         super(ProductLineEdit, self).__init__(parent)
         self.textChanged.connect(self.onTextChanged)
-    
+
     def keyPressEvent(self, event):
         forbidden_chars = set('/\\:*?"<>|')
         if event.text() in forbidden_chars:
@@ -45,11 +46,12 @@ class ProductLineEdit(LineEdit):
     def onTextChanged(self, text):
         forbidden_chars = set('/\\:*?"<>|')
         filtered_text = ''.join(ch for ch in text if ch not in forbidden_chars)
-        
+
         if text != filtered_text:
             self.blockSignals(True)
             self.setText(filtered_text)
             self.blockSignals(False)
+
 
 class TagSelectionDialog(QDialog):
     def __init__(self, available_tags, selected_tags=None, parent=None):
@@ -58,7 +60,7 @@ class TagSelectionDialog(QDialog):
         self.setStyleSheet("TagSelectionDialog{background: rgb(32, 32, 32)}")
         setTheme(Theme.DARK)
         self.resize(450, 370)
-        
+
         if selected_tags is None:
             selected_tags = []
         self.selected_tags = selected_tags
@@ -80,7 +82,7 @@ class TagSelectionDialog(QDialog):
         self.okButton = PushButton('OK', self)
         self.okButton.clicked.connect(self.accept)
         buttonLayout.addWidget(self.okButton)
-        
+
         self.cancelButton = PushButton('Cancel', self)
         self.cancelButton.clicked.connect(self.reject)
         buttonLayout.addWidget(self.cancelButton)
@@ -104,12 +106,14 @@ class TagSelectionDialog(QDialog):
                 selected_tags.append(widget.text())
         return selected_tags
 
+
 class CustomCompactSpinBox(CompactSpinBox):
     def __init__(self, parent=None):
         super().__init__(parent)
 
     def textFromValue(self, value):
         return f"{value:02d}"
+
 
 class ImageLabel(QLabel):
     def __init__(self, parent=None):
@@ -126,7 +130,10 @@ class ImageLabel(QLabel):
 
         self.setAcceptDrops(True)
         self.setAlignment(Qt.AlignCenter)
-        self.setStyleSheet('border: 2px solid #323232; border-radius: 5px; color: white; font-family: "Segoe UI"; font-size: 10pt;')
+        self.setStyleSheet(
+            'border: 2px solid #323232; border-radius: 5px; '
+            'color: white; font-family: "Segoe UI"; font-size: 10pt;'
+        )
         self.originalStyleSheet = self.styleSheet()
 
         self.removeImageButton = PrimaryPushButton(FIF.CLOSE, "Remove", self)
@@ -288,12 +295,18 @@ class ImageLabel(QLabel):
             event.ignore()
 
     def mousePressEvent(self, event):
-        filePath, _ = QFileDialog.getOpenFileName(self, "Select an image", "", "Image Files (*.png *.jpg *.jpeg *.bmp *.webp)")
+        filePath, _ = QFileDialog.getOpenFileName(
+            self, "Select an image", "",
+            "Image Files (*.png *.jpg *.jpeg *.bmp *.webp)"
+        )
         if filePath:
             self.setImagePath(filePath)
 
     def enterEvent(self, event):
-        self.setStyleSheet('border: 2px solid #25d9e6; border-radius: 5px; color: white; font-family: "Segoe UI"; font-size: 10pt;')
+        self.setStyleSheet(
+            'border: 2px solid #25d9e6; border-radius: 5px; '
+            'color: white; font-family: "Segoe UI"; font-size: 10pt;'
+        )
         self.setCursor(QCursor(Qt.PointingHandCursor))
         super().enterEvent(event)
 
@@ -334,14 +347,15 @@ class ImageLabel(QLabel):
                 if seq == self._load_seq:
                     self._set_owned_temp_path(temp_path)
                 else:
-                    try: os.remove(temp_path)
-                    except Exception: pass
+                    try:
+                        os.remove(temp_path)
+                    except Exception:
+                        pass
 
             finally:
                 reply.deleteLater()
 
         reply.finished.connect(_finished)
-
 
     def _adopt_qimage_as_temp(self, qimg: QImage, suffix=".png"):
         try:
@@ -447,7 +461,6 @@ class ImageLabel(QLabel):
                 if not isinstance(raw, (bytes, bytearray)):
                     raw = bytes(raw)
 
-
             pm = QPixmap()
             if not pm.loadFromData(raw):
                 return False
@@ -459,6 +472,7 @@ class ImageLabel(QLabel):
             return True
         except Exception:
             return False
+
 
 class ZipThread(QThread):
     succeeded = Signal()
@@ -520,6 +534,7 @@ class NameEntryDialog(MessageBoxBase):
     def getName(self):
         return self.nameLineEdit.text().strip()
 
+
 class CustomTreeView(TreeView):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -560,7 +575,11 @@ class CustomTreeView(TreeView):
             return
 
         destinationIndex = self.indexAt(event.pos())
-        destinationPath = self.model().filePath(destinationIndex) if destinationIndex.isValid() else self.parent().dimbuild_dir
+        destinationPath = (
+            self.model().filePath(destinationIndex)
+            if destinationIndex.isValid()
+            else self.parent().dimbuild_dir
+        )
 
         normDestinationPath = os.path.normpath(destinationPath).lower()
         normDimBuildDir = os.path.normpath(self.parent().dimbuild_dir).lower()
@@ -595,7 +614,6 @@ class CustomTreeView(TreeView):
 
         if any_file_op:
             QTimer.singleShot(0, self.parent().refresh_view)
-
 
     def copyPath(self, sourcePath, destinationPath):
         if not os.path.isdir(destinationPath):
@@ -671,7 +689,6 @@ class CustomTreeView(TreeView):
             log.error(f"Error copying {sourcePath} to {target}: {e}")
             self.parent().InvalidFolderInfoBar()
 
-
     def movePath(self, sourcePath, destinationPath):
         if not os.path.isdir(destinationPath):
             destinationPath = os.path.dirname(destinationPath)
@@ -694,7 +711,8 @@ class CustomTreeView(TreeView):
                     log.warning(f"Move blocked: {src_abs} -> {tgt_abs} (self/subfolder).")
                     return
             try:
-                if os.path.exists(tgt_abs) and os.path.samefile(src_abs, tgt_abs):
+                if (os.path.exists(tgt_abs) and
+                        os.path.samefile(src_abs, tgt_abs)):
                     print("Move skipped: source and target are the same.")
                     log.info("Move skipped: same source and target.")
                     return
@@ -709,8 +727,8 @@ class CustomTreeView(TreeView):
                     self.parent(),
                     "Item exists",
                     f"'{basename}' already exists. Overwrite (replace)?",
-                    QMessageBox.StandardButton.Yes 
-                    | QMessageBox.StandardButton.No 
+                    QMessageBox.StandardButton.Yes
+                    | QMessageBox.StandardButton.No
                     | QMessageBox.StandardButton.YesToAll,
                     QMessageBox.StandardButton.No
                 )
@@ -745,7 +763,8 @@ class CustomTreeView(TreeView):
 
 
 class FileExplorer(QWidget):
-    def __init__(self, path=os.path.expanduser("~"), parent=None, dimbuild_dir="", main_gui=None):
+    def __init__(self, path=os.path.expanduser("~"), parent=None,
+                 dimbuild_dir="", main_gui=None):
         super().__init__(parent)
         self.dimbuild_dir = dimbuild_dir
         self.main_gui = main_gui
@@ -761,7 +780,7 @@ class FileExplorer(QWidget):
 
         self.treeView.setSortingEnabled(True)
         self.treeView.sortByColumn(0, Qt.AscendingOrder)
-        
+
         self.treeView.setAcceptDrops(True)
         self.treeView.setDragEnabled(True)
         self.treeView.setDragDropMode(TreeView.DragDropMode.DragDrop)
@@ -831,7 +850,7 @@ class FileExplorer(QWidget):
         selected_index = self.treeView.currentIndex()
         if not selected_index.isValid():
             return
-        
+
         menu = RoundMenu(parent=self)
         newMenu = RoundMenu("New", self)
         newMenu.setIcon(FIF.ADD)
@@ -904,12 +923,12 @@ class FileExplorer(QWidget):
     def reinitialize_model(self, newRootPath):
         self.model = QFileSystemModel()
         self.model.setRootPath('')
-        
+
         self.treeView.setModel(self.model)
         self.treeView.setRootIndex(self.model.index(newRootPath))
-        
+
         self.treeView.setExpandsOnDoubleClick(False)
-        
+
         specificIndex = self.model.index(newRootPath)
         self.treeView.setRootIndex(specificIndex)
         self.treeView.expand(specificIndex)
@@ -949,7 +968,10 @@ class FileExplorer(QWidget):
         destination_index = self.treeView.currentIndex()
         if destination_index.isValid():
             selected_path = self.model.filePath(destination_index)
-            destination_path = selected_path if os.path.isdir(selected_path) else os.path.dirname(selected_path)
+            destination_path = (
+                selected_path if os.path.isdir(selected_path)
+                else os.path.dirname(selected_path)
+            )
         else:
             destination_path = self.model.rootPath()
 
@@ -967,14 +989,21 @@ class FileExplorer(QWidget):
             if os.path.isdir(src_abs):
                 common = os.path.commonpath([src_abs, tgt_abs])
                 if common == src_abs:
-                    show_warning(self, "Invalid Operation",
-                                "Cannot paste a folder into itself or its subfolder.",
-                                Qt.Vertical)
+                    show_warning(
+                        self, "Invalid Operation",
+                        "Cannot paste a folder into itself or its subfolder.",
+                        Qt.Vertical
+                    )
                     log.warning(f"Paste blocked: {src_abs} -> {tgt_abs} (self/subfolder).")
                     return
             if os.path.samefile(self.clipboard, target):
-                show_info(self, "Operation Skipped", "Source and destination are the same.")
-                log.info(f"Paste skipped: same source and destination: {src_abs}")
+                show_info(
+                    self, "Operation Skipped",
+                    "Source and destination are the same."
+                )
+                log.info(
+                    f"Paste skipped: same source and destination: {src_abs}"
+                )
                 return
         except Exception:
             pass
@@ -984,15 +1013,17 @@ class FileExplorer(QWidget):
                 self,
                 "File exists",
                 f"The item '{basename}' already exists in the destination. Overwrite?",
-                QMessageBox.StandardButton.Yes | 
+                QMessageBox.StandardButton.Yes |
                 QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No
             )
             if reply == QMessageBox.StandardButton.No:
                 print("Operation canceled by the user.")
                 log.info("Paste canceled by user (overwrite denied).")
-                show_info(self, "Operation Canceled",
-                        f"Item <strong>{basename}</strong> not moved/copied.")
+                show_info(
+                    self, "Operation Canceled",
+                    f"Item <strong>{basename}</strong> not moved/copied."
+                )
                 return
 
             try:
@@ -1002,8 +1033,10 @@ class FileExplorer(QWidget):
                     os.remove(target)
             except Exception as e:
                 log.error(f"Failed to remove existing target '{target}': {e}")
-                show_error(self, "Overwrite Failed",
-                        f"Could not remove existing target.<br><small>{e}</small>")
+                show_error(
+                    self, "Overwrite Failed",
+                    f"Could not remove existing target.<br><small>{e}</small>"
+                )
                 return
 
         try:
@@ -1011,8 +1044,10 @@ class FileExplorer(QWidget):
                 shutil.move(self.clipboard, target)
                 print(f"Item moved: {self.clipboard} -> {destination_path}")
                 log.info(f"Item moved: {self.clipboard} -> {destination_path}")
-                show_info(self, "Moving Successful",
-                        f"Item <strong>{basename}</strong> successfully moved.")
+                show_info(
+                    self, "Moving Successful",
+                    f"Item <strong>{basename}</strong> successfully moved."
+                )
             else:
                 if os.path.isdir(self.clipboard):
                     shutil.copytree(self.clipboard, target)
@@ -1021,18 +1056,22 @@ class FileExplorer(QWidget):
                     shutil.copy2(self.clipboard, target)
                 print(f"Item copied: {self.clipboard} -> {destination_path}")
                 log.info(f"Item copied: {self.clipboard} -> {destination_path}")
-                show_info(self, "Copying Successful",
-                        f"Item <strong>{basename}</strong> successfully copied.")
+                show_info(
+                    self, "Copying Successful",
+                    f"Item <strong>{basename}</strong> successfully copied."
+                )
         except Exception as e:
             print(f"Error during paste operation: {e}")
             log.error(f"Error during paste operation: {e}")
-            show_error(self, "Paste Failed", f"Error during paste operation.<br><small>{e}</small>")
+            show_error(
+                self, "Paste Failed",
+                f"Error during paste operation.<br><small>{e}</small>"
+            )
         finally:
             self.clipboard = None
             self.isCutOperation = False
             QTimer.singleShot(0, self.refresh_view)
 
-            
     def deleteSelected(self):
         selected_index = self.treeView.currentIndex()
         if selected_index.isValid():
@@ -1050,7 +1089,11 @@ class FileExplorer(QWidget):
             except OSError as e:
                 print(f"Failed to delete the selected item. Error encountered: {e}")
                 log.error(f"Failed to delete the selected item. Error encountered: {e}")
-                show_error(self, 'Deletion Failed', "Failed to delete the selected item. Please try again or check for file permissions.")
+                show_error(
+                    self, 'Deletion Failed',
+                    "Failed to delete the selected item. Please try again or "
+                    "check for file permissions."
+                )
 
     def renameSelected(self):
         selected_index = self.treeView.currentIndex()
@@ -1059,15 +1102,28 @@ class FileExplorer(QWidget):
             base_path = os.path.dirname(current_path)
             current_name = os.path.basename(current_path)
 
-            dialog = NameEntryDialog(self, title="Rename", placeholder="Enter new name")
+            dialog = NameEntryDialog(
+                self, title="Rename", placeholder="Enter new name"
+            )
             dialog.nameLineEdit.setText(current_name)
             if dialog.exec():
                 new_name = dialog.getName()
                 new_path = os.path.join(base_path, new_name)
                 if os.path.exists(new_path):
                     print("Error: A file or folder with the new name already exists.")
-                    log.error(f"Error: Failed to rename item <strong>{current_name}</strong> into <strong>{new_name}</strong>. A file or folder with the <strong>{new_name}</strong> already exists.")
-                    show_warning(self, "Renaming Failed", f"Failed to rename item <strong>{current_name}</strong> into <strong>{new_name}</strong>. A file or folder with the <strong>{new_name}</strong> already exists.", Qt.Vertical)
+                    log.error(
+                        f"Error: Failed to rename item <strong>{current_name}"
+                        f"</strong> into <strong>{new_name}</strong>. A file or "
+                        f"folder with the <strong>{new_name}</strong> already "
+                        "exists."
+                    )
+                    show_warning(
+                        self, "Renaming Failed",
+                        f"Failed to rename item <strong>{current_name}</strong> "
+                        f"into <strong>{new_name}</strong>. A file or folder with "
+                        f"the <strong>{new_name}</strong> already exists.",
+                        Qt.Vertical
+                    )
                     return
                 try:
                     os.rename(current_path, new_path)
@@ -1085,10 +1141,16 @@ class FileExplorer(QWidget):
                 return
 
             destination_index = self.treeView.currentIndex()
-            destination_path = self.model.filePath(destination_index) if destination_index.isValid() else self.model.rootPath()
+            destination_path = (
+                self.model.filePath(destination_index)
+                if destination_index.isValid()
+                else self.model.rootPath()
+            )
             if not os.path.isdir(destination_path):
                 destination_path = os.path.dirname(destination_path)
-            new_file_path = os.path.join(destination_path, file_name if file_name else "New File.txt")
+            new_file_path = os.path.join(
+                destination_path, file_name if file_name else "New File.txt"
+            )
 
             if os.path.exists(new_file_path):
                 overwrite_reply = QMessageBox.question(
@@ -1122,10 +1184,16 @@ class FileExplorer(QWidget):
                 return
 
             destination_index = self.treeView.currentIndex()
-            destination_path = self.model.filePath(destination_index) if destination_index.isValid() else self.model.rootPath()
+            destination_path = (
+                self.model.filePath(destination_index)
+                if destination_index.isValid()
+                else self.model.rootPath()
+            )
             if not os.path.isdir(destination_path):
                 destination_path = os.path.dirname(destination_path)
-            new_folder_path = os.path.join(destination_path, folder_name if folder_name else "New Folder")
+            new_folder_path = os.path.join(
+                destination_path, folder_name if folder_name else "New Folder"
+            )
 
             if os.path.exists(new_folder_path):
                 show_warning(self, "Folder Exists", f"The folder {folder_name} already exists.")
@@ -1141,4 +1209,3 @@ class FileExplorer(QWidget):
                 show_error(self, "Error", f"Error creating folder {folder_name}.")
                 print(f"Error creating folder {new_folder_path}: {e}")
                 log.error(f"Error creating folder {new_folder_path}: {e}")
-

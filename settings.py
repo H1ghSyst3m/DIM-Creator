@@ -29,8 +29,13 @@ class StoreDataEditor(QWidget):
         self.table.setHorizontalHeaderLabels(["Name", "Prefix"])
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setAlternatingRowColors(True)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked | QAbstractItemView.EditTrigger.EditKeyPressed)
+        self.table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.table.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked |
+            QAbstractItemView.EditTrigger.EditKeyPressed
+        )
 
         self.table.setColumnWidth(0, 200)
         self.table.setColumnWidth(1, 100)
@@ -257,11 +262,21 @@ class SettingsDialog(QDialog):
         about_col.setSpacing(6)
 
         title = SubtitleLabel("DIM-Creator", info_tab)
-        version_lbl = SubtitleLabel(f"Version: {self.app_version}", info_tab)
-        about = SubtitleLabel("A tool for creating DAZ Install Manager packages (DIM).", info_tab)
+        version_lbl = SubtitleLabel(
+            f"Version: {self.app_version}", info_tab
+        )
+        about = SubtitleLabel(
+            "A tool for creating DAZ Install Manager packages (DIM).",
+            info_tab
+        )
 
-        self.auto_update_checkbox = CheckBox("Check for updates on startup", info_tab)
-        self.auto_update_checkbox.setToolTip("If enabled, the app will contact GitHub and notify you when a new release is available.")
+        self.auto_update_checkbox = CheckBox(
+            "Check for updates on startup", info_tab
+        )
+        self.auto_update_checkbox.setToolTip(
+            "If enabled, the app will contact GitHub and notify you when a "
+            "new release is available."
+        )
 
         for w in (title, version_lbl, about, self.auto_update_checkbox):
             w.setWordWrap(True) if hasattr(w, "setWordWrap") else None
@@ -275,8 +290,8 @@ class SettingsDialog(QDialog):
         links_header.setWordWrap(True)
         links_col.addWidget(links_header)
 
-        github_url  = "https://github.com/H1ghSyst3m/DIM-Creator"
-        issues_url  = "https://github.com/H1ghSyst3m/DIM-Creator/issues"
+        github_url = "https://github.com/H1ghSyst3m/DIM-Creator"
+        issues_url = "https://github.com/H1ghSyst3m/DIM-Creator/issues"
         website_url = "https://example.com/dim-creator"
         license_url = "https://raw.githubusercontent.com/H1ghSyst3m/DIM-Creator/main/LICENSE"
 
@@ -310,14 +325,21 @@ class SettingsDialog(QDialog):
         credits_col.setSpacing(6)
 
         credits_data = [
-            ("patool", "GPLv3", True, "https://github.com/wummel/patool/"),
-            ("QFluentWidgets", "GPLv3", True, "https://github.com/zhiyiYo/PyQt-Fluent-Widgets/"),
+            ("patool", "GPLv3", True,
+             "https://github.com/wummel/patool/"),
+            ("QFluentWidgets", "GPLv3", True,
+             "https://github.com/zhiyiYo/PyQt-Fluent-Widgets/"),
         ]
 
         def make_link_button(text: str, url: str):
             btn = PushButton(FIF.LINK, text, info_tab)
             btn.setToolTip(url)
-            btn.clicked.connect(lambda _=None, u=url: (log.info("Open credit link: %s", u), QDesktopServices.openUrl(QUrl(u))))
+            btn.clicked.connect(
+                lambda _=None, u=url: (
+                    log.info("Open credit link: %s", u),
+                    QDesktopServices.openUrl(QUrl(u))
+                )
+            )
             return btn
 
         for name, lic, _, url in credits_data:

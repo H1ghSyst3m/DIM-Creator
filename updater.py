@@ -24,6 +24,7 @@ log = get_logger(__name__)
 
 GITHUB_LATEST_API = "https://api.github.com/repos/H1ghSyst3m/DIM-Creator/releases/latest"
 
+
 @dataclass
 class ReleaseInfo:
     tag_name: str
@@ -31,6 +32,7 @@ class ReleaseInfo:
     html_url: str
     body: str
     published_at: str
+
 
 def _normalize_version(v: str) -> str:
     if not v:
@@ -40,6 +42,7 @@ def _normalize_version(v: str) -> str:
     v = v.split('+')[0]
     v = v.split('-')[0]
     return v
+
 
 def _to_tuple(v: str):
     parts = [p for p in _normalize_version(v).split('.') if p != ""]
@@ -51,8 +54,10 @@ def _to_tuple(v: str):
         out.append(0)
     return tuple(out[:3])
 
+
 def is_newer(remote_tag: str, current_version: str) -> bool:
     return _to_tuple(remote_tag) > _to_tuple(current_version)
+
 
 def _fetch_latest(timeout=7) -> ReleaseInfo:
     ua = f"DIM-Creator-Updater/{sys.version_info.major}.{sys.version_info.minor}"
@@ -71,6 +76,7 @@ def _fetch_latest(timeout=7) -> ReleaseInfo:
             published_at=data.get("published_at") or "",
         )
 
+
 class UpdateCheckThread(QThread):
     result = Signal(object)
     error = Signal(str)
@@ -87,6 +93,7 @@ class UpdateCheckThread(QThread):
             self.error.emit(f"Network error: {e}")
         except Exception as e:
             self.error.emit(str(e))
+
 
 class UpdateDialog(MessageBoxBase):
     def __init__(self, parent, *, current_version: str, rel: ReleaseInfo):
@@ -136,6 +143,7 @@ class UpdateDialog(MessageBoxBase):
         self.skipCheck.stateChanged.connect(
             lambda _: setattr(self, "skip_this_version", self.skipCheck.isChecked())
         )
+
 
 class UpdateManager(QObject):
     checkingChanged = Signal(bool)

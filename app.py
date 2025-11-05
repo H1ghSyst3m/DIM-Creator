@@ -15,15 +15,25 @@ if sys.stdout is None:
 if sys.stderr is None:
     sys.stderr = open(os.devnull, "w")
 
-from qfluentwidgets import setFont, PrimaryPushButton, PushButton, LineEdit, setTheme, Theme, EditableComboBox, CheckBox, InfoBar, InfoBarPosition, ProgressRing, ToolButton, StateToolTip
+from qfluentwidgets import (
+    setFont, PrimaryPushButton, PushButton, LineEdit, setTheme, Theme,
+    EditableComboBox, CheckBox, InfoBarPosition, ProgressRing, ToolButton,
+    StateToolTip
+)
 from qfluentwidgets import FluentIcon as FIF
 from PySide6.QtWidgets import (
-    QMessageBox, QApplication, QWidget, QLabel, QDialog, 
+    QMessageBox, QApplication, QWidget, QLabel, QDialog,
     QVBoxLayout, QFileDialog, QCompleter, QHBoxLayout,
-    QGraphicsBlurEffect, QStackedLayout, QSizePolicy, QFormLayout, QSpacerItem
-    )
-from PySide6.QtCore import Qt, QThread, Signal, QSettings, QTimer, QRegularExpression
-from PySide6.QtGui import QIcon, QKeySequence, QIntValidator, QRegularExpressionValidator, QShortcut
+    QGraphicsBlurEffect, QStackedLayout, QSizePolicy, QFormLayout,
+    QSpacerItem
+)
+from PySide6.QtCore import (
+    Qt, QThread, Signal, QSettings, QTimer, QRegularExpression
+)
+from PySide6.QtGui import (
+    QIcon, QKeySequence, QIntValidator, QRegularExpressionValidator,
+    QShortcut
+)
 from xml.etree.ElementTree import Element, SubElement, tostring
 from xml.dom import minidom
 from PIL import Image, ImageOps
@@ -52,41 +62,60 @@ settings = QSettings("Syst3mApps", "DIMCreator")
 
 documents_path = documents_dir()
 doc_main_dir = DOC_MAIN_DIR
-logo_path = resource_path(os.path.join('assets', 'images', 'logo', 'favicon.ico'))
+logo_path = resource_path(
+    os.path.join('assets', 'images', 'logo', 'favicon.ico')
+)
+
 
 class DIMPackageGUI(QWidget):
     def __init__(self):
         super().__init__()
         self.doc_main_dir = doc_main_dir
-        self.storeitems, self.store_prefixes, self.available_tags, self.daz_folders = load_configurations(self.doc_main_dir)
+        (self.storeitems, self.store_prefixes, self.available_tags,
+         self.daz_folders) = load_configurations(self.doc_main_dir)
         self.stateTooltip = None
         self.ensure_directory_structure()
         setTheme(Theme.DARK)
         self.initUI()
         self.loadSettings()
         self.updateZipPreview()
-        self.updater = UpdateManager(self, settings, current_version=APP_VERSION, interval_hours=24)
+        self.updater = UpdateManager(
+            self, settings, current_version=APP_VERSION, interval_hours=24
+        )
         self.updater.schedule_on_startup_if_enabled()
         QTimer.singleShot(0, self.updateSourcePrefixBasedOnStore)
         self._extractionHadError = False
 
-
     def loadSettings(self):
-        self.prefix_input.setText(settings.value("prefix_input", "", type=str))
-        self.product_tags_input.setText(settings.value("product_tags_input", "DAZStudio4_5", type=str))
-        self.last_destination_folder = settings.value("last_destination_folder", os.path.expanduser("~"), type=str)
-        self.copy_template_files = settings.value("copy_template_files", False, type=bool)
-        self.template_destination = settings.value("template_destination", "", type=str)
+        self.prefix_input.setText(
+            settings.value("prefix_input", "", type=str)
+        )
+        self.product_tags_input.setText(
+            settings.value("product_tags_input", "DAZStudio4_5", type=str)
+        )
+        self.last_destination_folder = settings.value(
+            "last_destination_folder", os.path.expanduser("~"), type=str
+        )
+        self.copy_template_files = settings.value(
+            "copy_template_files", False, type=bool
+        )
+        self.template_destination = settings.value(
+            "template_destination", "", type=str
+        )
+
         saved_store = settings.value("store_input", "", type=str)
         if saved_store:
             index = self.store_input.findText(saved_store)
             if index >= 0:
                 self.store_input.setCurrentIndex(index)
             else:
-                log.warning(f"Saved store '{saved_store}' not found in available stores, using default.")
-        
-        self.use_store_prefix_checkbox.setChecked(settings.value("auto_prefix", False, type=bool))
-
+                log.warning(
+                    f"Saved store '{saved_store}' not found in available "
+                    "stores, using default."
+                )
+        self.use_store_prefix_checkbox.setChecked(
+            settings.value("auto_prefix", False, type=bool)
+        )
 
     def saveSettings(self):
         settings.setValue("prefix_input", self.prefix_input.text())
@@ -94,7 +123,7 @@ class DIMPackageGUI(QWidget):
         settings.setValue("last_destination_folder", self.last_destination_folder)
         settings.setValue("store_input", self.store_input.currentText())
         settings.setValue("auto_prefix", self.use_store_prefix_checkbox.isChecked())
-        
+
     def closeEvent(self, event):
         try:
             self.process_button.setEnabled(False)
@@ -145,7 +174,6 @@ class DIMPackageGUI(QWidget):
 
         super().closeEvent(event)
 
-
     def ensure_directory_structure(self):
         self.dimbuild_dir = os.path.join(doc_main_dir, "DIMBuild")
         self.content_dir = os.path.join(self.dimbuild_dir, "Content")
@@ -184,7 +212,7 @@ class DIMPackageGUI(QWidget):
     def updateSourcePrefixBasedOnStore(self):
         use_store_prefix = self.use_store_prefix_checkbox.isChecked()
         self.prefix_input.setEnabled(not use_store_prefix)
-        
+
         if use_store_prefix:
             selected_store = self.store_input.currentText()
             store_prefix = self.store_prefixes.get(selected_store, "")
@@ -289,7 +317,9 @@ class DIMPackageGUI(QWidget):
         form.addRow(L("Store:"), self.store_input)
 
         prefix_row = QWidget(self)
-        pr_h = QHBoxLayout(prefix_row); pr_h.setContentsMargins(0,0,0,0); pr_h.setSpacing(8)
+        pr_h = QHBoxLayout(prefix_row)
+        pr_h.setContentsMargins(0, 0, 0, 0)
+        pr_h.setSpacing(8)
         self.prefix_input = LineEdit(self)
         self.prefix_input.setClearButtonEnabled(True)
         self.prefix_input.setPlaceholderText("IM")
@@ -309,14 +339,19 @@ class DIMPackageGUI(QWidget):
         form.addRow(L("Product Name:"), self.product_name_input)
 
         sku_row = QWidget(self)
-        sku_h = QHBoxLayout(sku_row); sku_h.setContentsMargins(0,0,0,0); sku_h.setSpacing(8)
+        sku_h = QHBoxLayout(sku_row)
+        sku_h.setContentsMargins(0, 0, 0, 0)
+        sku_h.setSpacing(8)
         self.sku_input = LineEdit(self)
         self.sku_input.setClearButtonEnabled(True)
         self.sku_input.setPlaceholderText("47939")
         self.sku_input.setMaxLength(8)
         self.sku_input.setValidator(QIntValidator(0, 99999999, self))
-        self.sku_input.setToolTip("Enter the SKU (Stock Keeping Unit) for the package.")
-        dash_lbl = QLabel("-", self); dash_lbl.setStyleSheet(label_stylesheet)
+        self.sku_input.setToolTip(
+            "Enter the SKU (Stock Keeping Unit) for the package."
+        )
+        dash_lbl = QLabel("-", self)
+        dash_lbl.setStyleSheet(label_stylesheet)
         self.product_part_input = CustomCompactSpinBox(self)
         self.product_part_input.setRange(1, 99)
         self.product_part_input.setValue(1)
@@ -326,11 +361,16 @@ class DIMPackageGUI(QWidget):
         form.addRow(L("Package SKU:"), sku_row)
 
         guid_row = QWidget(self)
-        guid_h = QHBoxLayout(guid_row); guid_h.setContentsMargins(0,0,0,0); guid_h.setSpacing(8)
+        guid_h = QHBoxLayout(guid_row)
+        guid_h.setContentsMargins(0, 0, 0, 0)
+        guid_h.setSpacing(8)
         self.guid_input = LineEdit(self)
         self.guid_input.setClearButtonEnabled(True)
         self.guid_input.setPlaceholderText("a4a82911-662e-4e02-8416-b7b8c0f7d4a4")
-        self.guid_input.setToolTip("This is a unique identifier for the package. Click the generate button to create one.")
+        self.guid_input.setToolTip(
+            "This is a unique identifier for the package. Click the "
+            "generate button to create one."
+        )
         self.guid_input.setValidator(
             QRegularExpressionValidator(
                 QRegularExpression(r'^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$'),
@@ -345,19 +385,27 @@ class DIMPackageGUI(QWidget):
         form.addRow(L("Package GUID:"), guid_row)
 
         tags_row = QWidget(self)
-        tags_h = QHBoxLayout(tags_row); tags_h.setContentsMargins(0,0,0,0); tags_h.setSpacing(8)
+        tags_h = QHBoxLayout(tags_row)
+        tags_h.setContentsMargins(0, 0, 0, 0)
+        tags_h.setSpacing(8)
         self.product_tags_input = LineEdit(self)
         self.product_tags_input.setClearButtonEnabled(True)
-        self.product_tags_input.setToolTip("Click the Tag button to select product tags that apply.")
+        self.product_tags_input.setToolTip(
+            "Click the Tag button to select product tags that apply."
+        )
         self.tags_button = ToolButton(FIF.TAG, self)
         self.tags_button.clicked.connect(self.openTagSelectionDialog)
-        self.tags_button.setToolTip("Click to select product tags that apply.")
+        self.tags_button.setToolTip(
+            "Click to select product tags that apply."
+        )
         tags_h.addWidget(self.product_tags_input, 1)
         tags_h.addWidget(self.tags_button, 0)
         form.addRow(L("Product Tags:"), tags_row)
 
         opts_row = QWidget(self)
-        opts_h = QHBoxLayout(opts_row); opts_h.setContentsMargins(0,0,0,0); opts_h.setSpacing(8)
+        opts_h = QHBoxLayout(opts_row)
+        opts_h.setContentsMargins(0, 0, 0, 0)
+        opts_h.setSpacing(8)
         self.support_clean_input = CheckBox("Clean Support Directory", self)
         self.support_clean_input.setChecked(True)
         opts_h.addWidget(self.support_clean_input, 0)
@@ -365,22 +413,30 @@ class DIMPackageGUI(QWidget):
         form.addRow(L("Options:"), opts_row)
 
         actions_row = QWidget(self)
-        actions_h = QHBoxLayout(actions_row); actions_h.setContentsMargins(0,0,0,0); actions_h.setSpacing(8)
+        actions_h = QHBoxLayout(actions_row)
+        actions_h.setContentsMargins(0, 0, 0, 0)
+        actions_h.setSpacing(8)
         self.process_button = PrimaryPushButton("Generate", self)
         self.process_button.clicked.connect(self.process)
-        self.process_button.setToolTip("Click to start the DIM package creation process.")
+        self.process_button.setToolTip(
+            "Click to start the DIM package creation process."
+        )
         self.clear_button = ToolButton(FIF.ERASE_TOOL, self)
         self.clear_button.clicked.connect(self.clearAll)
-        self.clear_button.setToolTip("Clear all input fields and clean the DIMBuild folder.")
+        self.clear_button.setToolTip(
+            "Clear all input fields and clean the DIMBuild folder."
+        )
         actions_h.addWidget(self.process_button, 0)
         actions_h.addWidget(self.clear_button, 0)
         actions_h.addStretch(1)
         form.addRow(L("Actions:"), actions_row)
 
-        form.addItem(QSpacerItem(0, 24, QSizePolicy.Minimum, QSizePolicy.Fixed))
+        form.addItem(
+            QSpacerItem(0, 24, QSizePolicy.Minimum, QSizePolicy.Fixed)
+        )
 
         prev_row = QWidget(self)
-        prev_h   = QHBoxLayout(prev_row)
+        prev_h = QHBoxLayout(prev_row)
         prev_h.setContentsMargins(0, 0, 0, 0)
         prev_h.setSpacing(8)
 
@@ -399,9 +455,11 @@ class DIMPackageGUI(QWidget):
 
         copy_btn = ToolButton(FIF.COPY, self)
         copy_btn.setToolTip("Copy filename to clipboard")
+
         def _copy_preview():
             QApplication.clipboard().setText(self.zip_preview_edit.text())
             show_info(self, "Copied", "Filename copied to clipboard.")
+
         copy_btn.clicked.connect(_copy_preview)
 
         prev_h.addWidget(self.zip_preview_edit, 1)
@@ -451,12 +509,12 @@ class DIMPackageGUI(QWidget):
         right.addWidget(image_container, 1)
         main.addWidget(right_wrap, 0)
 
-
         util_bar = QHBoxLayout()
         util_bar.setContentsMargins(0, 0, 0, 0)
         util_bar.setSpacing(8)
 
-        left_tools = QHBoxLayout(); left_tools.setSpacing(8)
+        left_tools = QHBoxLayout()
+        left_tools.setSpacing(8)
         self.always_on_top_button = ToolButton(FIF.PIN, self)
         self.always_on_top_button.setCheckable(True)
         self.always_on_top_button.clicked.connect(self.toggleAlwaysOnTop)
@@ -494,15 +552,18 @@ class DIMPackageGUI(QWidget):
         self.prefix_input.textChanged.connect(self.updateZipPreview)
         self.sku_input.textChanged.connect(self.updateZipPreview)
         self.product_name_input.textChanged.connect(self.updateZipPreview)
-        self.product_part_input.valueChanged.connect(lambda *_: self.updateZipPreview())
-
+        self.product_part_input.valueChanged.connect(
+            lambda *_: self.updateZipPreview()
+        )
 
     def showSettingsDialog(self):
         dialog = SettingsDialog(self.doc_main_dir, self)
 
         dialog.copy_templates_checkbox.setChecked(self.copy_template_files)
         dialog.template_destination_field.setText(self.template_destination)
-        dialog.auto_update_checkbox.setChecked(settings.value("auto_update_check", True, type=bool))
+        dialog.auto_update_checkbox.setChecked(
+            settings.value("auto_update_check", True, type=bool)
+        )
 
         if dialog.exec():
             self.copy_template_files = dialog.copy_templates_checkbox.isChecked()
@@ -515,7 +576,8 @@ class DIMPackageGUI(QWidget):
             settings.setValue("auto_update_check", auto_enabled)
             self.updater.set_auto_enabled(auto_enabled)
 
-            self.storeitems, self.store_prefixes, self.available_tags, self.daz_folders = load_configurations(self.doc_main_dir)
+            (self.storeitems, self.store_prefixes, self.available_tags,
+             self.daz_folders) = load_configurations(self.doc_main_dir)
             self.store_input.clear()
             self.store_input.addItems(self.storeitems)
             self.store_completer = QCompleter(self.storeitems, self)
@@ -617,12 +679,24 @@ class DIMPackageGUI(QWidget):
             self.guid_input.setText(guid)
 
         if not all([store, product_name, prefix, sku, product_part]):
-            show_info(self, "Missing Required Fields", "Please fill in all required fields to proceed with DIM package creation.", Qt.Vertical)
+            show_info(
+                self, "Missing Required Fields",
+                "Please fill in all required fields to proceed with DIM "
+                "package creation.",
+                Qt.Vertical
+            )
             return
-        
-        destination_folder = QFileDialog.getExistingDirectory(self, "Select Destination Folder", self.last_destination_folder)
+
+        destination_folder = QFileDialog.getExistingDirectory(
+            self, "Select Destination Folder", self.last_destination_folder
+        )
         if not destination_folder:
-            show_info(self, "DIM Creation Canceled", "No destination folder selected. DIM package creation has been canceled.", Qt.Vertical)
+            show_info(
+                self, "DIM Creation Canceled",
+                "No destination folder selected. DIM package creation has "
+                "been canceled.",
+                Qt.Vertical
+            )
             return
         else:
             self.last_destination_folder = destination_folder
@@ -631,13 +705,19 @@ class DIMPackageGUI(QWidget):
             reply = QMessageBox.question(
                 self,
                 "Content Validation Failed",
-                "No recognized DAZ main folders found in the content directory. "
+                "No recognized DAZ main folders found in the content "
+                "directory. "
                 "Do you want to continue anyway?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
             if reply == QMessageBox.StandardButton.No:
-                show_info(self, "DIM Creation Canceled", "DIM package creation canceled due to content validation failure.", Qt.Vertical)
+                show_info(
+                    self, "DIM Creation Canceled",
+                    "DIM package creation canceled due to content "
+                    "validation failure.",
+                    Qt.Vertical
+                )
                 return
 
         def prettify(elem):
@@ -676,13 +756,13 @@ class DIMPackageGUI(QWidget):
         def process_and_paste_image(content_dir, store, sku, product_name, image_path):
             if not image_path:
                 return True
-            
+
             log.info("Attempting to generate Product cover.")
             try:
                 sanitized_product_name = re.sub(r'[^A-Za-z0-9._-]+', '_', product_name).strip('_')
                 store_formatted = re.sub(r'[^A-Za-z0-9._-]+', '_', store).strip('_')
                 new_image_name = f"{store_formatted}_{sku}_{sanitized_product_name}.jpg"
-                
+
                 target_dir = os.path.join(content_dir, "Runtime", "Support")
                 os.makedirs(target_dir, exist_ok=True)
                 new_image_path = os.path.join(target_dir, new_image_name)
@@ -729,9 +809,11 @@ class DIMPackageGUI(QWidget):
                 SubElement(root, 'ProductName', VALUE=product_name)
                 SubElement(root, 'InstallTypes', VALUE="Content")
                 SubElement(root, 'ProductTags', VALUE=product_tags)
-                
+
                 xml_str = prettify(root)
-                supplement_path = os.path.join(os.path.dirname(content_dir), "Supplement.dsx")
+                supplement_path = os.path.join(
+                    os.path.dirname(content_dir), "Supplement.dsx"
+                )
                 with open(supplement_path, "w", encoding="utf-8", newline="\n") as supplement_file:
                     supplement_file.write(xml_str)
                 log.info("Product Supplement successfully generated.")
@@ -740,14 +822,19 @@ class DIMPackageGUI(QWidget):
                 log.error(f"An error occurred while creating the supplement: {str(e)}")
                 return False
 
-        def zip_content_and_manifests(content_dir, prefix, sku, product_part, product_name, destination_folder, report_progress, total_files):
+        def zip_content_and_manifests(
+            content_dir, prefix, sku, product_part, product_name,
+            destination_folder, report_progress, total_files
+        ):
             prefix_clean = re.sub(r'[^A-Za-z0-9]+', '', str(prefix)).upper()
             try:
                 sku_formatted = f"{int(str(sku)):08d}"
             except ValueError:
                 sku_formatted = str(sku).zfill(8)
 
-            sanitized_name = re.sub(r'[^A-Za-z0-9._-]+', '_', str(product_name)).strip('_')
+            sanitized_name = re.sub(
+                r'[^A-Za-z0-9._-]+', '_', str(product_name)
+            ).strip('_')
             zip_name = f"{prefix_clean}{sku_formatted}-{product_part}_{sanitized_name}.zip"
             zip_path = os.path.join(destination_folder, zip_name)
 
@@ -758,7 +845,10 @@ class DIMPackageGUI(QWidget):
             files_zipped = 0
             ignore_names = {'.DS_Store', 'Thumbs.db', 'desktop.ini', '__MACOSX'}
 
-            with zipfile.ZipFile(zip_path, mode='w', compression=zipfile.ZIP_DEFLATED, compresslevel=9, strict_timestamps=False) as zipf:
+            with zipfile.ZipFile(
+                zip_path, mode='w', compression=zipfile.ZIP_DEFLATED,
+                compresslevel=9, strict_timestamps=False
+            ) as zipf:
                 for root, dirs, files in os.walk(content_dir):
                     dirs.sort()
                     files.sort()
@@ -767,13 +857,17 @@ class DIMPackageGUI(QWidget):
                         if fname in ignore_names:
                             continue
                         file_path = os.path.join(root, fname)
-                        arcname = os.path.relpath(file_path, arc_base).replace(os.sep, '/')
+                        arcname = os.path.relpath(
+                            file_path, arc_base
+                        ).replace(os.sep, '/')
                         zipf.write(file_path, arcname)
 
                         files_zipped += 1
                         if total_files > 0:
                             percent = int((files_zipped / total_files) * 100)
-                            report_progress(99 if percent >= 99 else max(0, percent))
+                            report_progress(
+                                99 if percent >= 99 else max(0, percent)
+                            )
 
                 manifest_path = os.path.join(arc_base, "Manifest.dsx")
                 supplement_path = os.path.join(arc_base, "Supplement.dsx")
@@ -789,16 +883,30 @@ class DIMPackageGUI(QWidget):
             log.error("Failed to clean the Support directory. Exiting.")
             return
 
-        if not process_and_paste_image(content_dir, store, sku, product_name, image_path):
-            log.warning("Image processing failed. Skipping manifest and supplement creation.")
-            show_error(self, "Image Processing Failed", "Failed to process the image. Manifest and supplement creation will be skipped.")
+        if not process_and_paste_image(
+            content_dir, store, sku, product_name, image_path
+        ):
+            log.warning(
+                "Image processing failed. Skipping manifest and supplement "
+                "creation."
+            )
+            show_error(
+                self, "Image Processing Failed",
+                "Failed to process the image. Manifest and supplement "
+                "creation will be skipped."
+            )
         else:
             manifest_created = create_manifest(content_dir)
-            supplement_created = create_supplement(content_dir, product_name, product_tags)
-            
+            supplement_created = create_supplement(
+                content_dir, product_name, product_tags
+            )
+
             if manifest_created and supplement_created:
                 self._setImageBusy(True, "Packaging…", 0)
-                self.zip_thread = ZipThread(content_dir, prefix, sku, product_part, product_name, destination_folder, zip_content_and_manifests)
+                self.zip_thread = ZipThread(
+                    content_dir, prefix, sku, product_part, product_name,
+                    destination_folder, zip_content_and_manifests
+                )
                 zt = self.zip_thread
                 self.process_button.setEnabled(False)
                 self.extract_button.setEnabled(False)
@@ -811,7 +919,11 @@ class DIMPackageGUI(QWidget):
                 zt.start()
             else:
                 log.warning("Skipping zip creation due to previous errors.")
-                show_error(self, "DIM Creation Skipped", "Manifest or supplement creation failed. DIM packaging will be skipped.")
+                show_error(
+                    self, "DIM Creation Skipped",
+                    "Manifest or supplement creation failed. DIM packaging "
+                    "will be skipped."
+                )
         pass
 
     def updateProgress(self, percent):
@@ -878,7 +990,6 @@ class DIMPackageGUI(QWidget):
 
         w.start()
 
-
     def dropExtractArchive(self, archive_file_path):
         self._extractionHadError = False
         self.showExtractionState(True)
@@ -929,7 +1040,7 @@ class DIMPackageGUI(QWidget):
                         f"Template <b>{templateName}</b> copied successfully.",
                         Qt.Vertical, InfoBarPosition.BOTTOM_RIGHT
                     )
-        
+
     def onExtractionError(self, message):
         self._extractionHadError = True
         log.error(f"Extraction Error: {message}")
@@ -939,8 +1050,10 @@ class DIMPackageGUI(QWidget):
             except Exception:
                 pass
             self.stateTooltip = None
-        show_error(self, "Extraction failed", message, Qt.Vertical, InfoBarPosition.BOTTOM_RIGHT, True, 3000)
-
+        show_error(
+            self, "Extraction failed", message, Qt.Vertical,
+            InfoBarPosition.BOTTOM_RIGHT, True, 3000
+        )
 
     def _close_tip(self, tip_attr):
         tip = getattr(self, tip_attr, None)
@@ -966,7 +1079,11 @@ class DIMPackageGUI(QWidget):
         self._close_tip("_finalTip")
 
         title = 'Extraction completed' if success else 'Extraction canceled'
-        final_tip = StateToolTip(title, message or ('Done.' if success else 'An error occurred.'), self)
+        final_tip = StateToolTip(
+            title,
+            message or ('Done.' if success else 'An error occurred.'),
+            self
+        )
         final_tip.setState(success)
         final_tip.move(510, 30)
         final_tip.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
@@ -990,7 +1107,10 @@ class ContentExtractionWorker(QThread):
     extractionComplete = Signal()
     extractionError = Signal(str)
 
-    def __init__(self, archive_file_path, daz_folders, content_dir, copy_template_files, template_destination, parent=None):
+    def __init__(
+        self, archive_file_path, daz_folders, content_dir,
+        copy_template_files, template_destination, parent=None
+    ):
         super(ContentExtractionWorker, self).__init__(parent)
         self.archive_file_path = archive_file_path
         self.daz_folders = {s.casefold() for s in daz_folders}
@@ -1057,7 +1177,7 @@ class ContentExtractionWorker(QThread):
             self.copiedTemplates.append(template_file)
             log.info(f"Copied template archive [{template_archive_path}] to [{self.template_destination}]")
         else:
-            log.info(f"Not copying template file as per user setting.")
+            log.info("Not copying template file as per user setting.")
         try:
             os.remove(template_archive_path)
             log.info(f"Removed template archive from temporary directory: [{template_archive_path}]")
@@ -1111,11 +1231,13 @@ class ContentExtractionWorker(QThread):
             finally:
                 log.info("Cleaning up temporary files from embedded archive extraction.")
 
-
     def extractRelevantContent(self, directory, base_paths):
         try:
             if base_paths:
-                base_abs_candidates = [os.path.normpath(os.path.join(directory, bp)) for bp in base_paths]
+                base_abs_candidates = [
+                    os.path.normpath(os.path.join(directory, bp))
+                    for bp in base_paths
+                ]
                 common_base = os.path.commonpath(base_abs_candidates)
             else:
                 common_base = os.path.normpath(directory)
@@ -1208,4 +1330,3 @@ if __name__ == '__main__':
     ex = DIMPackageGUI()
     ex.show()
     sys.exit(app.exec())
-
