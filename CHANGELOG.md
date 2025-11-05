@@ -5,6 +5,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [Unreleased]
+### Fixed
+- **Session Persistence**: Store Field dropdown selection and Auto Prefix checkbox state are now saved and restored between sessions.
+
 ## v1.2.0
 ### Added
 - **Progress Ring Overlay**: Centered progress ring with percentage display shown over the preview image during packaging.
