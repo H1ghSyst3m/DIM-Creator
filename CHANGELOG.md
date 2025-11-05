@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated dependencies in `requirements.txt` and `requirements-build.txt` to separate build-time and runtime packages.
   - Moved `pyinstaller` to `requirements-build.txt`.
   - Removed `nuitka` from `requirements.txt`.
+- **Code Quality**: Resolved 130+ PEP 8 violations (whitespace, formatting, imports, line length). All files now pass flake8 linting.
 
 ### Fixed
 - **Session Persistence**: Store Field dropdown selection and Auto Prefix checkbox state are now saved and restored between sessions.
