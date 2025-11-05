@@ -6,8 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 ## [Unreleased]
+### Changed
+- Updated dependencies in `requirements.txt` and `requirements-build.txt` to separate build-time and runtime packages.
+  - Moved `pyinstaller` to `requirements-build.txt`.
+  - Removed `nuitka` from `requirements.txt`.
+
 ### Fixed
 - **Session Persistence**: Store Field dropdown selection and Auto Prefix checkbox state are now saved and restored between sessions.
+
 
 ## v1.2.0
 ### Added
