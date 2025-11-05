@@ -77,12 +77,24 @@ class DIMPackageGUI(QWidget):
         self.last_destination_folder = settings.value("last_destination_folder", os.path.expanduser("~"), type=str)
         self.copy_template_files = settings.value("copy_template_files", False, type=bool)
         self.template_destination = settings.value("template_destination", "", type=str)
+        saved_store = settings.value("store_input", "", type=str)
+        if saved_store:
+            index = self.store_input.findText(saved_store)
+            if index >= 0:
+                self.store_input.setCurrentIndex(index)
+            else:
+                log.warning(f"Saved store '{saved_store}' not found in available stores, using default.")
+        
+        self.use_store_prefix_checkbox.setChecked(settings.value("auto_prefix", False, type=bool))
+
 
     def saveSettings(self):
         settings.setValue("prefix_input", self.prefix_input.text())
         settings.setValue("product_tags_input", self.product_tags_input.text())
         settings.setValue("last_destination_folder", self.last_destination_folder)
-
+        settings.setValue("store_input", self.store_input.currentText())
+        settings.setValue("auto_prefix", self.use_store_prefix_checkbox.isChecked())
+        
     def closeEvent(self, event):
         try:
             self.process_button.setEnabled(False)
