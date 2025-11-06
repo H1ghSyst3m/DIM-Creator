@@ -581,12 +581,18 @@ class CustomTreeView(TreeView):
             else self.parent().dimbuild_dir
         )
 
-        normDestinationPath = os.path.normpath(destinationPath).lower()
-        normDimBuildDir = os.path.normpath(self.parent().dimbuild_dir).lower()
+        try:
+            base_abs = os.path.abspath(self.parent().dimbuild_dir)
+            dest_abs = os.path.abspath(destinationPath)
+            base_nc = os.path.normcase(os.path.normpath(base_abs))
+            dest_nc = os.path.normcase(os.path.normpath(dest_abs))
+            is_inside = os.path.commonpath([dest_nc, base_nc]) == base_nc
+        except Exception:
+            is_inside = False
 
-        if not normDestinationPath.startswith(normDimBuildDir):
-            print(f"Attempt to drop outside DIMBuild directory: {normDestinationPath} to {normDimBuildDir}")
-            log.warning(f"Attempt to drop outside DIMBuild directory: {normDestinationPath} to {normDimBuildDir}")
+        if not is_inside:
+            print(f"Attempt to drop outside DIMBuild directory: {destinationPath} to {self.parent().dimbuild_dir}")
+            log.warning(f"Attempt to drop outside DIMBuild directory: {destinationPath} to {self.parent().dimbuild_dir}")
             self.parent().InvalidFolderInfoBar()
             event.ignore()
             return
@@ -597,8 +603,13 @@ class CustomTreeView(TreeView):
             sourcePath = url.toLocalFile()
             try:
                 if sourcePath.lower().endswith(('.zip', '.rar', '.7z')):
-                    if self.parent().main_gui:
-                        self.parent().main_gui.dropExtractArchive(sourcePath)
+                    mg = getattr(self.parent(), "main_gui", None)
+                    if mg:
+                        worker = getattr(mg, "extractionWorker", None)
+                        if worker and worker.isRunning():
+                            show_info(mg, "Extraction running", "Please wait for the current extraction to finish.")
+                        else:
+                            mg.dropExtractArchive(sourcePath)
                 else:
                     if event.source() == self:
                         self.movePath(sourcePath, destinationPath)

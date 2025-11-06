@@ -990,6 +990,10 @@ class DIMPackageGUI(QWidget):
         w.start()
 
     def dropExtractArchive(self, archive_file_path):
+        if getattr(self, "extractionWorker", None) and self.extractionWorker.isRunning():
+            show_info(self, "Extraction running", "Please wait for the current extraction to finish.")
+            return
+
         self._extractionHadError = False
         self.showExtractionState(True)
         log.info("Extraction started from TreeView...")
