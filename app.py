@@ -638,7 +638,6 @@ class DIMPackageGUI(QWidget):
     def clearFields(self):
         log.info("Attempting to clear all data.")
         try:
-            self.store_input.setCurrentIndex(0)
             self.product_name_input.clear()
             self.sku_input.clear()
             self.product_part_input.setValue(1)
