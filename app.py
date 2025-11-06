@@ -699,6 +699,11 @@ class DIMPackageGUI(QWidget):
             return
         else:
             self.last_destination_folder = destination_folder
+            settings.setValue("last_destination_folder", self.last_destination_folder)
+            try:
+                settings.sync()
+            except Exception:
+                pass
 
         if not self.contentValidation(content_dir):
             reply = QMessageBox.question(
