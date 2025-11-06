@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Session Persistence**: Store Field dropdown selection and Auto Prefix checkbox state are now saved and restored between sessions.
-
+- Fixed issue at clearing function where store field was reset to default instead of keeping user selection.
 
 ## v1.2.0
 ### Added
