@@ -25,7 +25,7 @@ from qfluentwidgets import (
 )
 from qfluentwidgets import FluentIcon as FIF
 
-from utils import resource_path, calculate_total_files, show_warning, show_error, show_info
+from utils import resource_path, show_warning, show_error, show_info
 from logger_utils import get_logger
 
 log = get_logger(__name__)

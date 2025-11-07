@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Code Refactoring**: Decoupled packaging from the GUI; introduced packaging_utils.py and a PackagingWorker so the entire packaging pipeline runs off the UI thread.
 - **Code Refactoring**: Decoupled content extraction from the GUI; introduced extraction_utils.py and a ContentExtractionWorker so the entire extraction process runs off the UI thread.
 - Changed compression level for packaging from 9 (maximum) to 6 (default) to improve speed, since maximum compression yields minimal size savings for typical DIM content.
+- **Packaging Progress Reporting**: Progress for zipping is now calculated based on file size instead of file count. This provides a much more accurate and smooth progress bar, especially for packages containing large files.
 
 ### Fixed
 - **Session Persistence**: Store Field dropdown selection and Auto Prefix checkbox state are now saved and restored between sessions.

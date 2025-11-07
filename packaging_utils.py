@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Any
 
 from logger_utils import get_logger
-from utils import calculate_total_files
+from utils import calculate_total_size
 
 log = get_logger(__name__)
 
@@ -214,8 +214,8 @@ class PackagingPipeline:
         zip_path = os.path.join(self.spec.destination_folder, zip_name)
 
         arc_base = os.path.dirname(self.spec.content_dir)
-        total_files = max(1, calculate_total_files(arc_base))
-        files_zipped = 0
+        total_size = max(1, calculate_total_size(arc_base))
+        size_zipped = 0
         self.log.info("Attempting to generate the DIM file: %s", zip_path)
 
         ignore_names = {'.DS_Store', 'Thumbs.db', 'desktop.ini', '__MACOSX'}
@@ -236,12 +236,17 @@ class PackagingPipeline:
                     if fname in ignore_names:
                         continue
                     file_path = os.path.join(root, fname)
-                    arcname = os.path.relpath(file_path, arc_base).replace(os.sep, '/')
-                    zipf.write(file_path, arcname)
 
-                    files_zipped += 1
-                    percent = int((files_zipped / total_files) * 100)
-                    progress_callback(percent)
+                    if os.path.isfile(file_path) and not os.path.islink(file_path):
+                        arcname = os.path.relpath(file_path, arc_base).replace(os.sep, '/')
+                        zipf.write(file_path, arcname)
+
+                        try:
+                            size_zipped += os.path.getsize(file_path)
+                            percent = int((size_zipped / total_size) * 100)
+                            progress_callback(percent)
+                        except OSError:
+                            pass
 
         progress_callback(100)
         self.log.info(f"DIM file created at: {zip_path}")

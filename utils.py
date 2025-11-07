@@ -85,11 +85,21 @@ def get_optimal_workers():
     return min(suggested_workers, max_workers_cap)
 
 
-def calculate_total_files(directory):
-    total_files = 0
-    for _, _, files in os.walk(directory):
-        total_files += len(files)
-    return total_files
+def calculate_total_size(directory):
+    """Calculate the total size of all files in a directory."""
+    total_size = 0
+    ignore_names = {'.DS_Store', 'Thumbs.db', 'desktop.ini', '__MACOSX'}
+    for dirpath, _, filenames in os.walk(directory):
+        for f in filenames:
+            if f in ignore_names:
+                continue
+            fp = os.path.join(dirpath, f)
+            if os.path.isfile(fp) and not os.path.islink(fp):
+                try:
+                    total_size += os.path.getsize(fp)
+                except OSError:
+                    pass
+    return total_size
 
 
 tooltip_stylesheet = """\
