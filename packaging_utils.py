@@ -3,6 +3,7 @@ import re
 import shutil
 import stat
 import zipfile
+import subprocess
 from xml.etree.ElementTree import Element, SubElement, tostring
 from xml.dom import minidom
 from PIL import Image, ImageOps
@@ -11,7 +12,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Any
 
 from logger_utils import get_logger
-from utils import calculate_total_size
+from utils import calculate_total_size, find_7z_executable, suppress_cmd_window
 
 log = get_logger(__name__)
 
@@ -46,6 +47,11 @@ class PackagingPipeline:
     def __init__(self, spec: PackageSpec):
         self.spec = spec
         self.log = get_logger(__name__)
+        self.seven_zip_path = find_7z_executable()
+        if self.seven_zip_path:
+            log.info(f"7-Zip executable found at: {self.seven_zip_path}")
+        else:
+            log.info("7-Zip executable not found, using built-in zipfile module.")
 
     def execute(self, callbacks: Dict[str, Callable[..., Any]]) -> tuple[bool, str]:
         """
@@ -200,8 +206,7 @@ class PackagingPipeline:
             self.log.error(f"An error occurred while creating the supplement: {e}")
             return False
 
-    def _zip_package(self, progress_callback: Callable[[int], None]) -> bool:
-        """Create the final ZIP package."""
+    def _build_zip_name(self) -> str:
         prefix_clean = re.sub(r'[^A-Za-z0-9]+', '', str(self.spec.prefix)).upper()
         try:
             sku_formatted = f"{int(str(self.spec.sku)):08d}"
@@ -210,13 +215,68 @@ class PackagingPipeline:
 
         part_str = f"{int(self.spec.product_part):02d}"
         sanitized_name = re.sub(r'[^A-Za-z0-9._-]+', '_', str(self.spec.product_name)).strip('_')
-        zip_name = f"{prefix_clean}{sku_formatted}-{part_str}_{sanitized_name}.zip"
-        zip_path = os.path.join(self.spec.destination_folder, zip_name)
+        return f"{prefix_clean}{sku_formatted}-{part_str}_{sanitized_name}.zip"
 
+    def _zip_package(self, progress_callback: Callable[[int], None]) -> bool:
+        """Create the final ZIP package."""
+        zip_name = self._build_zip_name()
+        zip_path = os.path.join(self.spec.destination_folder, zip_name)
         arc_base = os.path.dirname(self.spec.content_dir)
+
+        if self.seven_zip_path:
+            return self._zip_with_7z(zip_path, arc_base, progress_callback)
+        else:
+            return self._zip_with_zipfile(zip_path, arc_base, progress_callback)
+
+    def _zip_with_7z(self, zip_path: str, arc_base: str, progress_callback: Callable[[int], None]) -> bool:
+        self.log.info(f"Attempting to generate DIM file using 7-Zip: {zip_path}")
+        
+        command = [
+            self.seven_zip_path,
+            'a',
+            '-tzip',
+            '-mx=6',
+            '-bsp1',
+            zip_path,
+            '.\\*'
+        ]
+
+        with suppress_cmd_window():
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                cwd=arc_base
+            )
+
+        if process.stdout:
+            for line in iter(process.stdout.readline, ''):
+                line = line.strip()
+                if '%' in line:
+                    match = re.search(r'(\d+)\s*%', line)
+                    if match:
+                        percent = int(match.group(1))
+                        progress_callback(percent)
+            process.stdout.close()
+
+        process.wait()
+
+        if process.returncode != 0:
+            stderr_output = process.stderr.read() if process.stderr else "No stderr."
+            self.log.error(f"7-Zip failed with code {process.returncode}: {stderr_output}")
+            return False
+
+        progress_callback(100)
+        self.log.info(f"DIM file created with 7-Zip at: {zip_path}")
+        return True
+
+    def _zip_with_zipfile(self, zip_path: str, arc_base: str, progress_callback: Callable[[int], None]) -> bool:
+        self.log.info(f"Attempting to generate DIM file using zipfile: {zip_path}")
         total_size = max(1, calculate_total_size(arc_base))
         size_zipped = 0
-        self.log.info("Attempting to generate the DIM file: %s", zip_path)
 
         ignore_names = {'.DS_Store', 'Thumbs.db', 'desktop.ini', '__MACOSX'}
 
@@ -225,31 +285,26 @@ class PackagingPipeline:
             compresslevel=6, strict_timestamps=False
         ) as zipf:
             for root, dirs, files in os.walk(arc_base):
-                # Exclude empty directories from zipping
                 if not files and not dirs:
                     continue
-
                 dirs.sort()
                 files.sort()
-
                 for fname in files:
                     if fname in ignore_names:
                         continue
                     file_path = os.path.join(root, fname)
-
                     if os.path.isfile(file_path) and not os.path.islink(file_path):
                         arcname = os.path.relpath(file_path, arc_base).replace(os.sep, '/')
                         zipf.write(file_path, arcname)
-
                         try:
                             size_zipped += os.path.getsize(file_path)
                             percent = int((size_zipped / total_size) * 100)
                             progress_callback(percent)
                         except OSError:
                             pass
-
+        
         progress_callback(100)
-        self.log.info(f"DIM file created at: {zip_path}")
+        self.log.info(f"DIM file created with zipfile at: {zip_path}")
         return True
 
 

@@ -1,6 +1,7 @@
 import os
 import sys
 import subprocess
+import shutil
 from pathlib import Path
 from contextlib import contextmanager
 from PySide6.QtCore import QStandardPaths, Qt
@@ -100,6 +101,15 @@ def calculate_total_size(directory):
                 except OSError:
                     pass
     return total_size
+
+
+def find_7z_executable():
+    """Finds the 7-Zip executable."""
+    for name in ('7z', '7za'):
+        path = shutil.which(name)
+        if path:
+            return path
+    return None
 
 
 tooltip_stylesheet = """\

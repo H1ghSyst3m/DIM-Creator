@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Code Refactoring**: Decoupled content extraction from the GUI; introduced extraction_utils.py and a ContentExtractionWorker so the entire extraction process runs off the UI thread.
 - Changed compression level for packaging from 9 (maximum) to 6 (default) to improve speed, since maximum compression yields minimal size savings for typical DIM content.
 - **Packaging Progress Reporting**: Progress for zipping is now calculated based on file size instead of file count. This provides a much more accurate and smooth progress bar, especially for packages containing large files.
+- **Performance**: The application will now use 7-Zip for packaging if it is installed and available in the system's PATH. This significantly improves compression speed. If 7-Zip is not found, it gracefully falls back to the built-in `zipfile` module.
 
 ### Fixed
 - **Session Persistence**: Store Field dropdown selection and Auto Prefix checkbox state are now saved and restored between sessions.
