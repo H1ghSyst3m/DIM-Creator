@@ -249,7 +249,8 @@ class PackagingPipeline:
                 text=True,
                 encoding='utf-8',
                 errors='replace',
-                cwd=arc_base
+                cwd=arc_base,
+                bufsize=1
             )
 
         if process.stdout:
