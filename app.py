@@ -34,9 +34,6 @@ from PySide6.QtGui import (
     QIcon, QKeySequence, QIntValidator, QRegularExpressionValidator,
     QShortcut
 )
-from xml.etree.ElementTree import Element, SubElement, tostring
-from xml.dom import minidom
-from PIL import Image, ImageOps
 from concurrent.futures import ThreadPoolExecutor
 
 from utils import (
@@ -48,8 +45,9 @@ from utils import (
 from logger_utils import get_logger
 from widgets import (
     ProductLineEdit, TagSelectionDialog, CustomCompactSpinBox, ImageLabel,
-    ZipThread, FileExplorer
+    FileExplorer
 )
+from packaging_utils import PackagingWorker
 from config_utils import load_configurations
 from settings import SettingsDialog
 from updater import UpdateManager
@@ -145,7 +143,7 @@ class DIMPackageGUI(QWidget):
         except Exception:
             pass
 
-        for attr in ("zip_thread", "extractionWorker"):
+        for attr in ("packaging_worker", "extractionWorker"):
             t = getattr(self, attr, None)
             try:
                 if t and t.isRunning():
@@ -593,7 +591,7 @@ class DIMPackageGUI(QWidget):
         self.guid_input.setText(new_guid)
 
     def clearAll(self):
-        if getattr(self, "zip_thread", None) and self.zip_thread.isRunning():
+        if getattr(self, "packaging_worker", None) and self.packaging_worker.isRunning():
             show_info(self, "Busy", "Cannot clear while packaging is running.")
             return
         if getattr(self, "extractionWorker", None) and self.extractionWorker.isRunning():
@@ -657,7 +655,7 @@ class DIMPackageGUI(QWidget):
         return valid
 
     def process(self):
-        if getattr(self, "zip_thread", None) and self.zip_thread.isRunning():
+        if getattr(self, "packaging_worker", None) and self.packaging_worker.isRunning():
             show_info(self, "Already running", "Packaging is already in progress.")
             return
 
@@ -668,10 +666,10 @@ class DIMPackageGUI(QWidget):
         product_name = self.product_name_input.text()
         prefix = self.prefix_input.text()
         sku = self.sku_input.text()
-        product_part = f"{self.product_part_input.value():02d}"
+        product_part = self.product_part_input.value()
         product_tags = self.product_tags_input.text()
         image_path = self.image_label.imagePath
-        SupportClean = self.support_clean_input.isChecked()
+        support_clean = self.support_clean_input.isChecked()
         guid = self.guid_input.text()
         if not guid:
             guid = str(uuid.uuid4())
@@ -724,223 +722,56 @@ class DIMPackageGUI(QWidget):
                 )
                 return
 
-        def prettify(elem):
-            rough = tostring(elem, encoding="utf-8")
-            reparsed = minidom.parseString(rough)
-            pretty = reparsed.toprettyxml(indent=" ")
-            return '\n'.join(pretty.split('\n')[1:])
+        self.packaging_worker = PackagingWorker(
+            content_dir=content_dir,
+            store=store,
+            product_name=product_name,
+            prefix=prefix,
+            sku=sku,
+            product_part=product_part,
+            product_tags=product_tags,
+            image_path=image_path,
+            clean_support=support_clean,
+            guid=guid,
+            destination_folder=destination_folder,
+            parent=self
+        )
 
-        def clean_support_directory(content_dir):
-            target_dir = os.path.join(content_dir, "Runtime", "Support")
-            os.makedirs(target_dir, exist_ok=True)
-            log.info("Attempting to clean Support Directory.")
+        pw = self.packaging_worker
+        self.process_button.setEnabled(False)
+        self.extract_button.setEnabled(False)
+        self.clear_button.setEnabled(False)
+        self._setImageBusy(True, "Preparing…", 0)
 
-            def handle_remove_readonly(func, path, exc_info):
-                try:
-                    os.chmod(path, stat.S_IWRITE)
-                    func(path)
-                except Exception as e:
-                    log.error(f"Still failed to delete {path}. Reason: {e}")
+        pw.progress.connect(self.updateProgress)
+        pw.finished.connect(self.onPackagingFinished)
+        pw.error.connect(self.onPackagingError)
+        pw.start()
 
-            for name in os.listdir(target_dir):
-                p = os.path.join(target_dir, name)
-                try:
-                    if os.path.isfile(p) or os.path.islink(p):
-                        os.chmod(p, stat.S_IWRITE)
-                        os.unlink(p)
-                    elif os.path.isdir(p):
-                        shutil.rmtree(p, onerror=handle_remove_readonly)
-                except Exception as e:
-                    log.error(f"Failed to delete {p}. Reason: {e}")
-                    return False
-
-            log.info("Support directory successfully cleaned.")
-            return True
-
-        def process_and_paste_image(content_dir, store, sku, product_name, image_path):
-            if not image_path:
-                return True
-
-            log.info("Attempting to generate Product cover.")
-            try:
-                sanitized_product_name = re.sub(r'[^A-Za-z0-9._-]+', '_', product_name).strip('_')
-                store_formatted = re.sub(r'[^A-Za-z0-9._-]+', '_', store).strip('_')
-                new_image_name = f"{store_formatted}_{sku}_{sanitized_product_name}.jpg"
-
-                target_dir = os.path.join(content_dir, "Runtime", "Support")
-                os.makedirs(target_dir, exist_ok=True)
-                new_image_path = os.path.join(target_dir, new_image_name)
-                with Image.open(image_path) as img:
-                    img = ImageOps.exif_transpose(img)
-                    if img.mode != 'RGB':
-                        img = img.convert("RGB")
-                    img.thumbnail((300, 300), Image.Resampling.LANCZOS)
-                    img.save(new_image_path, "JPEG")
-                    log.info("Product cover successfully generated.")
-                return True
-            except Exception as e:
-                log.error(f"An error occurred while processing the image: {str(e)}")
-                return False
-
-        def create_manifest(content_dir):
-            log.info("Attempting to generate Product Manifest.")
-            try:
-                root = Element('DAZInstallManifest', VERSION="0.1")
-                SubElement(root, 'GlobalID', VALUE=guid)
-
-                for subdir, dirs, files in os.walk(content_dir):
-                    dirs.sort()
-                    files.sort()
-                    for file in files:
-                        file_path = os.path.join(subdir, file).replace("\\", "/")
-                        rel_path = os.path.relpath(file_path, start=content_dir).replace("\\", "/")
-                        SubElement(root, 'File', TARGET="Content", ACTION="Install", VALUE=f"Content/{rel_path}")
-
-                xml_str = prettify(root)
-                manifest_path = os.path.join(os.path.dirname(content_dir), "Manifest.dsx")
-                with open(manifest_path, "w", encoding="utf-8", newline="\n") as mf:
-                    mf.write(xml_str)
-                log.info("Product Manifest successfully generated.")
-                return True
-            except Exception as e:
-                log.error(f"An error occurred while creating the manifest: {str(e)}")
-                return False
-
-        def create_supplement(content_dir, product_name, product_tags):
-            log.info("Attempting to generate Product Supplement.")
-            try:
-                root = Element('ProductSupplement', VERSION="0.1")
-                SubElement(root, 'ProductName', VALUE=product_name)
-                SubElement(root, 'InstallTypes', VALUE="Content")
-                SubElement(root, 'ProductTags', VALUE=product_tags)
-
-                xml_str = prettify(root)
-                supplement_path = os.path.join(
-                    os.path.dirname(content_dir), "Supplement.dsx"
-                )
-                with open(supplement_path, "w", encoding="utf-8", newline="\n") as supplement_file:
-                    supplement_file.write(xml_str)
-                log.info("Product Supplement successfully generated.")
-                return True
-            except Exception as e:
-                log.error(f"An error occurred while creating the supplement: {str(e)}")
-                return False
-
-        def zip_content_and_manifests(
-            content_dir, prefix, sku, product_part, product_name,
-            destination_folder, report_progress, total_files
-        ):
-            prefix_clean = re.sub(r'[^A-Za-z0-9]+', '', str(prefix)).upper()
-            try:
-                sku_formatted = f"{int(str(sku)):08d}"
-            except ValueError:
-                sku_formatted = str(sku).zfill(8)
-
-            sanitized_name = re.sub(
-                r'[^A-Za-z0-9._-]+', '_', str(product_name)
-            ).strip('_')
-            zip_name = f"{prefix_clean}{sku_formatted}-{product_part}_{sanitized_name}.zip"
-            zip_path = os.path.join(destination_folder, zip_name)
-
-            arc_base = os.path.dirname(content_dir)
-
-            log.info("Attempting to generate the DIM file.")
-
-            files_zipped = 0
-            ignore_names = {'.DS_Store', 'Thumbs.db', 'desktop.ini', '__MACOSX'}
-
-            with zipfile.ZipFile(
-                zip_path, mode='w', compression=zipfile.ZIP_DEFLATED,
-                compresslevel=9, strict_timestamps=False
-            ) as zipf:
-                for root, dirs, files in os.walk(content_dir):
-                    dirs.sort()
-                    files.sort()
-
-                    for fname in files:
-                        if fname in ignore_names:
-                            continue
-                        file_path = os.path.join(root, fname)
-                        arcname = os.path.relpath(
-                            file_path, arc_base
-                        ).replace(os.sep, '/')
-                        zipf.write(file_path, arcname)
-
-                        files_zipped += 1
-                        if total_files > 0:
-                            percent = int((files_zipped / total_files) * 100)
-                            report_progress(
-                                99 if percent >= 99 else max(0, percent)
-                            )
-
-                manifest_path = os.path.join(arc_base, "Manifest.dsx")
-                supplement_path = os.path.join(arc_base, "Supplement.dsx")
-                if os.path.exists(manifest_path):
-                    zipf.write(manifest_path, "Manifest.dsx")
-                if os.path.exists(supplement_path):
-                    zipf.write(supplement_path, "Supplement.dsx")
-
-            report_progress(100)
-            log.info(f"DIM file created at: {zip_path}")
-
-        if SupportClean and not clean_support_directory(content_dir):
-            log.error("Failed to clean the Support directory. Exiting.")
-            return
-
-        if not process_and_paste_image(
-            content_dir, store, sku, product_name, image_path
-        ):
-            log.warning(
-                "Image processing failed. Skipping manifest and supplement "
-                "creation."
-            )
-            show_error(
-                self, "Image Processing Failed",
-                "Failed to process the image. Manifest and supplement "
-                "creation will be skipped."
-            )
-        else:
-            manifest_created = create_manifest(content_dir)
-            supplement_created = create_supplement(
-                content_dir, product_name, product_tags
-            )
-
-            if manifest_created and supplement_created:
-                self._setImageBusy(True, "Packaging…", 0)
-                self.zip_thread = ZipThread(
-                    content_dir, prefix, sku, product_part, product_name,
-                    destination_folder, zip_content_and_manifests
-                )
-                zt = self.zip_thread
-                self.process_button.setEnabled(False)
-                self.extract_button.setEnabled(False)
-                self.clear_button.setEnabled(False)
-                zt.progressUpdated.connect(self.updateProgress)
-                zt.succeeded.connect(self.DIMProcessCompleted)
-                zt.succeeded.connect(lambda *, _zt=zt: _zt.deleteLater())
-                zt.error.connect(self.onZipError)
-                zt.error.connect(lambda _m, *, _zt=zt: _zt.deleteLater())
-                zt.start()
-            else:
-                log.warning("Skipping zip creation due to previous errors.")
-                show_error(
-                    self, "DIM Creation Skipped",
-                    "Manifest or supplement creation failed. DIM packaging "
-                    "will be skipped."
-                )
-        pass
-
-    def updateProgress(self, percent):
+    def updateProgress(self, percent: int, message: str):
         self.progress_ring.setValue(percent)
-        self._setImageBusy(True, f"Packaging… {percent}%", percent)
+        self._setImageBusy(True, f"{message}… {percent}%", percent)
 
-    def onZipError(self, message: str):
-        log.error(f"ZIP error: {message}")
+    def onPackagingError(self, message: str):
+        log.error(f"Packaging error: {message}")
         show_error(
-            self, "ZIP Error",
-            f"An error occurred while creating the archive:<br><small>{message}</small>",
+            self, "Packaging Error",
+            f"An error occurred:<br><small>{message}</small>",
             Qt.Horizontal, InfoBarPosition.TOP_RIGHT, True, 5000
         )
+        self.resetPackagingState()
+
+    def onPackagingFinished(self, success: bool, message: str):
+        if success:
+            log.info("Packaging process completed successfully.")
+            self.DIMSuccessfullCreatedInfoBar()
+        else:
+            log.error(f"Packaging process failed: {message}")
+            show_error(self, "Packaging Failed", message)
+
+        self.resetPackagingState()
+
+    def resetPackagingState(self):
         try:
             self._setImageBusy(False)
         except Exception:
@@ -948,15 +779,9 @@ class DIMPackageGUI(QWidget):
         self.process_button.setEnabled(True)
         self.extract_button.setEnabled(True)
         self.clear_button.setEnabled(True)
-        self.zip_thread = None
-
-    def DIMProcessCompleted(self):
-        self.DIMSuccessfullCreatedInfoBar()
-        self._setImageBusy(False)
-        self.process_button.setEnabled(True)
-        self.extract_button.setEnabled(True)
-        self.clear_button.setEnabled(True)
-        self.zip_thread = None
+        if getattr(self, 'packaging_worker', None):
+            self.packaging_worker.deleteLater()
+            self.packaging_worker = None
 
     def DIMSuccessfullCreatedInfoBar(self):
         show_success(self, "Success", "The DIM has been successfully created and saved.")

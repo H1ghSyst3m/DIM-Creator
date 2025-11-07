@@ -474,42 +474,6 @@ class ImageLabel(QLabel):
             return False
 
 
-class ZipThread(QThread):
-    succeeded = Signal()
-    error = Signal(str)
-    progressUpdated = Signal(int)
-
-    def __init__(self, content_dir, prefix, sku, product_part, product_name, destination_folder, zip_function):
-        super().__init__()
-        self.content_dir = content_dir
-        self.prefix = prefix
-        self.sku = sku
-        self.product_part = product_part
-        self.product_name = product_name
-        self.destination_folder = destination_folder
-        self.zip_function = zip_function
-
-    def run(self):
-        try:
-            total_files = max(1, calculate_total_files(self.content_dir))
-            self.zip_function(
-                self.content_dir,
-                self.prefix,
-                self.sku,
-                self.product_part,
-                self.product_name,
-                self.destination_folder,
-                self.reportProgress,
-                total_files
-            )
-            self.succeeded.emit()
-        except Exception as e:
-            self.error.emit(str(e))
-
-    def reportProgress(self, percent):
-        self.progressUpdated.emit(percent)
-
-
 class NameEntryDialog(MessageBoxBase):
     def __init__(self, parent=None, title="Enter Name", placeholder="Enter name here"):
         super().__init__(parent)
