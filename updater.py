@@ -117,7 +117,9 @@ class UpdateDialog(MessageBoxBase):
 
         self.notes = QTextBrowser(self)
         self.notes.setOpenExternalLinks(True)
-        self.notes.setFont(QFont("Consolas"))
+        font = QFont()
+        font.setFamilies(["Consolas", "Cascadia Mono", "Courier New", "monospace"])
+        self.notes.setFont(font)
         self.notes.setMinimumHeight(300)
         body = rel.body or "No release notes provided."
         try:
