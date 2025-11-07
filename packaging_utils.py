@@ -222,7 +222,7 @@ class PackagingPipeline:
 
         with zipfile.ZipFile(
             zip_path, mode='w', compression=zipfile.ZIP_DEFLATED,
-            compresslevel=9, strict_timestamps=False
+            compresslevel=6, strict_timestamps=False
         ) as zipf:
             for root, dirs, files in os.walk(arc_base):
                 # Exclude empty directories from zipping

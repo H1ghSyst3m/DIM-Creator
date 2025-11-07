@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **File Explorer Drag & Drop**: Hardened DIMBuild boundary check. Now uses `os.path.commonpath` instead of string-based `startswith` to correctly detect drops outside of the DIMBuild directory (avoids false positives like “…/DIMBuild-Backup”).
 - **Code Refactoring**: Decoupled packaging from the GUI; introduced packaging_utils.py and a PackagingWorker so the entire packaging pipeline runs off the UI thread.
 - **Code Refactoring**: Decoupled content extraction from the GUI; introduced extraction_utils.py and a ContentExtractionWorker so the entire extraction process runs off the UI thread.
+- Changed compression level for packaging from 9 (maximum) to 6 (default) to improve speed, since maximum compression yields minimal size savings for typical DIM content.
 
 ### Fixed
 - **Session Persistence**: Store Field dropdown selection and Auto Prefix checkbox state are now saved and restored between sessions.
