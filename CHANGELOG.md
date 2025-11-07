@@ -11,13 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Moved `pyinstaller` to `requirements-build.txt`.
   - Removed `nuitka` from `requirements.txt`.
 - **Code Quality**: Resolved 130+ PEP 8 violations (whitespace, formatting, imports, line length). All files now pass flake8 linting.
-- **File Explorer Drag & Drop:** Hardened DIMBuild boundary check. Now uses `os.path.commonpath` instead of string-based `startswith` to correctly detect drops outside of the DIMBuild directory (avoids false positives like “…/DIMBuild-Backup”).
+- **File Explorer Drag & Drop**: Hardened DIMBuild boundary check. Now uses `os.path.commonpath` instead of string-based `startswith` to correctly detect drops outside of the DIMBuild directory (avoids false positives like “…/DIMBuild-Backup”).
 - **Code Refactoring**: Decoupled packaging from the GUI; introduced packaging_utils.py and a PackagingWorker so the entire packaging pipeline runs off the UI thread.
+- **Code Refactoring**: Decoupled content extraction from the GUI; introduced extraction_utils.py and a ContentExtractionWorker so the entire extraction process runs off the UI thread.
 
 ### Fixed
 - **Session Persistence**: Store Field dropdown selection and Auto Prefix checkbox state are now saved and restored between sessions.
 - Fixed issue at clearing function where store field was reset to default instead of keeping user selection.
-- **Extraction Concurrency (Drag & Drop):** Prevent starting a second extraction while one is already running.
+- **Extraction Concurrency (Drag & Drop)**: Prevent starting a second extraction while one is already running.
+- Fixed issue where last used destination folder was not saved after extraction until closing the app.
 
 ## v1.2.0
 ### Added
