@@ -47,7 +47,7 @@ from widgets import (
     ProductLineEdit, TagSelectionDialog, CustomCompactSpinBox, ImageLabel,
     FileExplorer
 )
-from packaging_utils import PackagingWorker
+from packaging_utils import PackagingWorker, PackageSpec
 from extraction_utils import ContentExtractionWorker
 from config_utils import load_configurations
 from settings import SettingsDialog
@@ -660,9 +660,6 @@ class DIMPackageGUI(QWidget):
             show_info(self, "Already running", "Packaging is already in progress.")
             return
 
-        dimbuild_dir = os.path.join(doc_main_dir, "DIMBuild")
-        content_dir = os.path.join(dimbuild_dir, "Content")
-
         store = self.store_input.currentText()
         product_name = self.product_name_input.text()
         prefix = self.prefix_input.text()
@@ -704,7 +701,7 @@ class DIMPackageGUI(QWidget):
             except Exception:
                 pass
 
-        if not self.contentValidation(content_dir):
+        if not self.contentValidation(self.content_dir):
             reply = QMessageBox.question(
                 self,
                 "Content Validation Failed",
@@ -723,8 +720,8 @@ class DIMPackageGUI(QWidget):
                 )
                 return
 
-        self.packaging_worker = PackagingWorker(
-            content_dir=content_dir,
+        spec = PackageSpec(
+            content_dir=self.content_dir,
             store=store,
             product_name=product_name,
             prefix=prefix,
@@ -734,9 +731,10 @@ class DIMPackageGUI(QWidget):
             image_path=image_path,
             clean_support=support_clean,
             guid=guid,
-            destination_folder=destination_folder,
-            parent=self
+            destination_folder=destination_folder
         )
+
+        self.packaging_worker = PackagingWorker(spec, parent=self)
 
         pw = self.packaging_worker
         self.process_button.setEnabled(False)
@@ -746,21 +744,11 @@ class DIMPackageGUI(QWidget):
 
         pw.progress.connect(self.updateProgress)
         pw.finished.connect(self.onPackagingFinished)
-        pw.error.connect(self.onPackagingError)
         pw.start()
 
     def updateProgress(self, percent: int, message: str):
         self.progress_ring.setValue(percent)
         self._setImageBusy(True, f"{message}… {percent}%", percent)
-
-    def onPackagingError(self, message: str):
-        log.error(f"Packaging error: {message}")
-        show_error(
-            self, "Packaging Error",
-            f"An error occurred:<br><small>{message}</small>",
-            Qt.Horizontal, InfoBarPosition.TOP_RIGHT, True, 5000
-        )
-        self.resetPackagingState()
 
     def onPackagingFinished(self, success: bool, message: str):
         if success:
@@ -768,7 +756,11 @@ class DIMPackageGUI(QWidget):
             self.DIMSuccessfullCreatedInfoBar()
         else:
             log.error(f"Packaging process failed: {message}")
-            show_error(self, "Packaging Failed", message)
+            show_error(
+                self, "Packaging Error",
+                f"An error occurred:<br><small>{message}</small>",
+                Qt.Horizontal, InfoBarPosition.TOP_RIGHT, True, 5000
+            )
 
         self.resetPackagingState()
 
