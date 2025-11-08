@@ -111,13 +111,25 @@ class PackagingPipeline:
 
         self.log.info("Attempting to clean Support Directory: %s", target_dir)
 
-        def handle_remove_readonly(func, path, _):
+        def handle_remove_readonly(os_error: OSError):
             """Clear the readonly bit and re-attempt the removal."""
             try:
-                os.chmod(path, stat.S_IWRITE)
-                func(path)
+                path = os_error.filename
+                if not path:
+                    return
+                try:
+                    os.chmod(path, stat.S_IWRITE)
+                except Exception:
+                    pass
+                try:
+                    if os.path.isdir(path) and not os.path.islink(path):
+                        os.rmdir(path)
+                    else:
+                        os.remove(path)
+                except Exception:
+                    pass
             except Exception as e:
-                self.log.error(f"Still failed to delete {path}. Reason: {e}")
+                self.log.error(f"Still failed to delete due to error object handling: {e}")
 
         for name in os.listdir(target_dir):
             p = os.path.join(target_dir, name)
@@ -126,7 +138,7 @@ class PackagingPipeline:
                     os.chmod(p, stat.S_IWRITE)
                     os.unlink(p)
                 elif os.path.isdir(p):
-                    shutil.rmtree(p, onerror=handle_remove_readonly)
+                    shutil.rmtree(p, onexc=handle_remove_readonly)
             except Exception as e:
                 self.log.error(f"Failed to delete {p}. Reason: {e}")
                 return False

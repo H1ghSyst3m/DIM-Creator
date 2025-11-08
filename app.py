@@ -619,7 +619,7 @@ class DIMPackageGUI(QWidget):
                 if os.path.isfile(file_path) or os.path.islink(file_path):
                     os.unlink(file_path)
                 elif os.path.isdir(file_path):
-                    shutil.rmtree(file_path, onerror=self.handle_remove_readonly)
+                    shutil.rmtree(file_path, onexc=self.handle_remove_readonly)
             except Exception as e:
                 log.error(f"Failed to clean DIMBuild folder: {e}")
 
@@ -630,9 +630,25 @@ class DIMPackageGUI(QWidget):
 
         self.fileExplorer.reinitialize_model(self.dimbuild_dir)
 
-    def handle_remove_readonly(self, func, path, exc_info):
-        os.chmod(path, stat.S_IWRITE)
-        func(path)
+    def handle_remove_readonly(self, os_error):
+        try:
+            path = os_error.filename
+            if not path:
+                return
+            try:
+                os.chmod(path, stat.S_IWRITE)
+            except Exception:
+                pass
+            # Retry removal after clearing read-only
+            try:
+                if os.path.isdir(path) and not os.path.islink(path):
+                    os.rmdir(path)
+                else:
+                    os.remove(path)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def clearFields(self):
         log.info("Attempting to clear all data.")
