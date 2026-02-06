@@ -5,7 +5,7 @@ import base64
 
 from PySide6.QtWidgets import (
     QMessageBox, QWidget, QLabel, QDialog, QVBoxLayout, QFileDialog,
-    QHBoxLayout, QFileSystemModel
+    QHBoxLayout, QFileSystemModel, QListWidget, QListWidgetItem, QCheckBox
 )
 from PySide6.QtCore import (
     Qt, QThread, Signal, QEasingCurve, QUrl, QTimer
@@ -21,12 +21,22 @@ from qfluentwidgets import (
     setTheme, Theme, PrimaryPushButton, PushButton, Action, RoundMenu, LineEdit,
     InfoBar, InfoBarPosition, InfoBarIcon,
     CompactSpinBox, TogglePushButton, FlowLayout, TreeView,
-    MessageBoxBase, SubtitleLabel
+    MessageBoxBase, SubtitleLabel, ToolButton
 )
 from qfluentwidgets import FluentIcon as FIF
 
-from utils import resource_path, show_warning, show_error, show_info
+from utils import resource_path, show_warning, show_error, show_info, get_build_content_dir, clean_build_content
+from build_manager import validate_build, get_build_data, reorder_builds
 from logger_utils import get_logger
+
+CHECKBOX_CHECKMARK_SVG = """
+<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+<path d="M13 4L6 11L3 8" stroke="white" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
+""".strip()
+
+CHECKBOX_CHECKMARK_BASE64 = base64.b64encode(CHECKBOX_CHECKMARK_SVG.encode('utf-8')).decode('ascii')
+
 
 log = get_logger(__name__)
 
@@ -116,6 +126,8 @@ class CustomCompactSpinBox(CompactSpinBox):
 
 
 class ImageLabel(QLabel):
+    imageChanged = Signal(str)
+    
     def __init__(self, parent=None):
         super().__init__(parent)
         self.imagePath = ""
@@ -193,6 +205,7 @@ class ImageLabel(QLabel):
 
     def resetToPlaceholder(self):
         self.loadPlaceholderImage()
+        self.imageChanged.emit("")
 
     def setImagePath(self, path):
         if not path or not os.path.exists(path):
@@ -209,6 +222,7 @@ class ImageLabel(QLabel):
         self._apply_scaled_pixmap()
         self.removeImageButton.show()
         self.updateButtonPosition()
+        self.imageChanged.emit(path)
 
     def removeImage(self):
         try:
@@ -539,24 +553,40 @@ class CustomTreeView(TreeView):
             return
 
         destinationIndex = self.indexAt(event.pos())
+        
+        file_explorer = self.parent()
+        main_gui = getattr(file_explorer, "main_gui", None)
+        if main_gui is not None and hasattr(main_gui, 'current_build') and main_gui.current_build:
+            build_content_dir = get_build_content_dir(main_gui.current_build.folder)
+            
+            if hasattr(file_explorer, 'current_path'):
+                expected_build_folder = os.path.dirname(build_content_dir)
+                if os.path.normcase(os.path.normpath(file_explorer.current_path)) != os.path.normcase(os.path.normpath(expected_build_folder)):
+                    log.warning(f"FileExplorer path mismatch: displaying {file_explorer.current_path} but current build is {expected_build_folder}")
+        else:
+            log.warning("No current build available for drag & drop")
+            event.ignore()
+            return
+        
         destinationPath = (
             self.model().filePath(destinationIndex)
             if destinationIndex.isValid()
-            else self.parent().dimbuild_dir
+            else build_content_dir
         )
 
         try:
-            base_abs = os.path.abspath(self.parent().dimbuild_dir)
+            base_abs = os.path.abspath(build_content_dir)
             dest_abs = os.path.abspath(destinationPath)
             base_nc = os.path.normcase(os.path.normpath(base_abs))
             dest_nc = os.path.normcase(os.path.normpath(dest_abs))
             is_inside = os.path.commonpath([dest_nc, base_nc]) == base_nc
-        except Exception:
+        except (ValueError, OSError, TypeError) as e:
+            log.error(f"Path validation error in drag-and-drop: {e}")
             is_inside = False
 
         if not is_inside:
-            print(f"Attempt to drop outside DIMBuild directory: {destinationPath} to {self.parent().dimbuild_dir}")
-            log.warning(f"Attempt to drop outside DIMBuild directory: {destinationPath} to {self.parent().dimbuild_dir}")
+            print(f"Attempt to drop outside build directory: {destinationPath} to {build_content_dir}")
+            log.warning(f"Attempt to drop outside build directory: {destinationPath} to {build_content_dir}")
             self.parent().InvalidFolderInfoBar()
             event.ignore()
             return
@@ -738,14 +768,22 @@ class CustomTreeView(TreeView):
 
 
 class FileExplorer(QWidget):
-    def __init__(self, path=os.path.expanduser("~"), parent=None,
-                 dimbuild_dir="", main_gui=None):
+    def __init__(self, path=os.path.expanduser("~"), parent=None, main_gui=None):
         super().__init__(parent)
-        self.dimbuild_dir = dimbuild_dir
         self.main_gui = main_gui
 
         self.clipboard = None
         self.isCutOperation = False
+        
+        if not path:
+            self.current_path = os.path.expanduser("~")
+        elif path.endswith("Content"):
+            self.current_path = os.path.dirname(path)
+        else:
+            self.current_path = path
+
+        if not os.path.exists(self.current_path):
+            self.current_path = os.path.expanduser("~")
 
         self.model = QFileSystemModel()
         self.model.setRootPath('')
@@ -760,7 +798,7 @@ class FileExplorer(QWidget):
         self.treeView.setDragEnabled(True)
         self.treeView.setDragDropMode(TreeView.DragDropMode.DragDrop)
 
-        specificIndex = self.model.index(path)
+        specificIndex = self.model.index(self.current_path)
         self.treeView.setRootIndex(specificIndex)
 
         self.treeView.setColumnWidth(0, 360)
@@ -768,6 +806,14 @@ class FileExplorer(QWidget):
         self.treeView.setColumnWidth(2, 120)
         self.treeView.setColumnWidth(3, 150)
         self.treeView.doubleClicked.connect(self.on_double_click)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.treeView)
+        self.setLayout(layout)
+        
+        if path.endswith("Content") and os.path.exists(path):
+            QTimer.singleShot(100, lambda: self._expandFolders(self.current_path, path))
 
         self.setupShortcuts()
 
@@ -795,7 +841,6 @@ class FileExplorer(QWidget):
             QTimer.singleShot(0, self.refresh_view)
 
     def resizeEvent(self, event):
-        self.treeView.setGeometry(0, 0, self.width(), self.height())
         super().resizeEvent(event)
 
     def InvalidFolderInfoBar(self):
@@ -891,22 +936,44 @@ class FileExplorer(QWidget):
                 log.warning("Error: The selected path does not exist.")
 
     def refresh_view(self):
-        root = self.treeView.model().rootPath()
-        self.model.setRootPath('')
-        self.model.setRootPath(root)
-
-    def reinitialize_model(self, newRootPath):
-        self.model = QFileSystemModel()
-        self.model.setRootPath('')
-
-        self.treeView.setModel(self.model)
-        self.treeView.setRootIndex(self.model.index(newRootPath))
-
-        self.treeView.setExpandsOnDoubleClick(False)
-
-        specificIndex = self.model.index(newRootPath)
-        self.treeView.setRootIndex(specificIndex)
-        self.treeView.expand(specificIndex)
+        if hasattr(self, 'current_path') and self.current_path:
+            self.model.setRootPath('')
+            specificIndex = self.model.index(self.current_path)
+            self.treeView.setRootIndex(specificIndex)
+            if specificIndex.isValid():
+                self.treeView.expand(specificIndex)
+        
+        self._updateBuildStatus()
+    
+    def _updateBuildStatus(self):
+        if not self.main_gui:
+            return
+        
+        if not hasattr(self.main_gui, 'current_build') or not self.main_gui.current_build:
+            return
+        
+        if not hasattr(self.main_gui, 'session') or not self.main_gui.session:
+            return
+        
+        try:
+            content_dir = get_build_content_dir(self.main_gui.current_build.folder)
+            effective_data = get_build_data(self.main_gui.session, self.main_gui.current_build)
+            
+            previous_status = self.main_gui.current_build.content_status
+            self.main_gui.current_build.content_status = validate_build(
+                self.main_gui.current_build,
+                content_dir,
+                self.main_gui.daz_folders,
+                effective_values=effective_data
+            )
+            
+            if hasattr(self.main_gui, 'buildListWidget') and self.main_gui.buildListWidget:
+                self.main_gui.buildListWidget.refreshList()
+            
+            if previous_status != self.main_gui.current_build.content_status:
+                self.main_gui.saveSession()
+        except Exception as e:
+            log.error(f"Error updating build status: {e}")
 
     def copySelected(self):
         selected_index = self.treeView.currentIndex()
@@ -1183,4 +1250,442 @@ class FileExplorer(QWidget):
             except OSError as e:
                 show_error(self, "Error", f"Error creating folder {folder_name}.")
                 print(f"Error creating folder {new_folder_path}: {e}")
-                log.error(f"Error creating folder {new_folder_path}: {e}")
+    
+    def setRootPath(self, path: str):
+        if os.path.exists(path):
+            self.model.setRootPath('')
+            
+            parent_path = os.path.dirname(path)
+            if parent_path and os.path.exists(parent_path):
+                self.current_path = parent_path
+                specificIndex = self.model.index(parent_path)
+                self.treeView.setRootIndex(specificIndex)
+                
+                if specificIndex.isValid():
+                    if self.model.canFetchMore(specificIndex):
+                        self.model.fetchMore(specificIndex)
+                    
+                    QTimer.singleShot(50, lambda: self._expandFolders(parent_path, path))
+            else:
+                self.current_path = path
+                specificIndex = self.model.index(path)
+                self.treeView.setRootIndex(specificIndex)
+                if specificIndex.isValid():
+                    if self.model.canFetchMore(specificIndex):
+                        self.model.fetchMore(specificIndex)
+                    QTimer.singleShot(50, lambda: self.treeView.expand(specificIndex))
+    
+    def _expandFolders(self, parent_path: str, content_path: str):
+        parent_index = self.model.index(parent_path)
+        if parent_index.isValid():
+            self.treeView.expand(parent_index)
+            
+            content_index = self.model.index(content_path)
+            if content_index.isValid():
+                if self.model.canFetchMore(content_index):
+                    self.model.fetchMore(content_index)
+                self.treeView.expand(content_index)
+
+
+class BuildListWidget(QWidget):
+    buildSelected = Signal(str)
+    buildAdded = Signal()
+    buildDeleted = Signal(str)
+    buildCheckedChanged = Signal(str, bool)
+    buildsReordered = Signal()
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.session = None
+        self.selected_build_id = None
+        self._refreshing = False
+        
+        self.initUI()
+    
+    def initUI(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        
+        self.listWidget = QListWidget(self)
+        
+        self.listWidget.setDragDropMode(QListWidget.DragDropMode.InternalMove)
+        self.listWidget.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.listWidget.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        
+        self.listWidget.setDropIndicatorShown(True)
+        
+        self.listWidget.model().rowsMoved.connect(self.onRowsMoved)
+        
+        self.listWidget.setStyleSheet("""
+            QListWidget {
+                background-color: rgb(45, 45, 45);
+                border: 1px solid rgb(60, 60, 60);
+                border-radius: 6px;
+                padding: 4px;
+            }
+            QListWidget::item {
+                color: white;
+                padding: 8px;
+                border-radius: 4px;
+                margin: 2px;
+                border: none;
+                outline: none;
+            }
+            QListWidget::item:hover {
+                background-color: rgb(55, 55, 55);
+            }
+            QListWidget::item:selected {
+                background-color: rgb(0, 120, 215);
+                color: white;
+                border: none;
+                outline: none;
+            }
+            QListWidget::indicator {
+                width: 14px;
+                height: 14px;
+                border: 2px solid rgb(120, 120, 120);
+                border-radius: 3px;
+                background-color: rgb(35, 35, 35);
+            }
+            QListWidget::indicator:hover {
+                border: 2px solid rgb(180, 180, 180);
+                background-color: rgb(50, 50, 50);
+            }
+            QListWidget::indicator:checked {
+                background-color: rgb(0, 120, 215);
+                border: 2px solid rgb(0, 150, 255);
+                image: url(data:image/svg+xml;base64,""" + CHECKBOX_CHECKMARK_BASE64 + """);
+            }
+            QListWidget::indicator:unchecked {
+                background-color: rgb(35, 35, 35);
+                border: 2px solid rgb(120, 120, 120);
+            }
+            QListWidget::indicator:checked:selected {
+                background-color: rgb(0, 150, 255);
+                border: 2px solid rgb(100, 200, 255);
+            }
+            QListWidget::indicator:unchecked:selected {
+                background-color: rgb(45, 45, 45);
+                border: 2px solid rgb(180, 180, 180);
+            }
+        """)
+        self.listWidget.itemClicked.connect(self.onItemClicked)
+        layout.addWidget(self.listWidget)
+        
+        button_row = QHBoxLayout()
+        button_row.setSpacing(8)
+        
+        self.addButton = PrimaryPushButton("+ Add Build", self)
+        self.addButton.clicked.connect(self.onAddBuild)
+        button_row.addWidget(self.addButton)
+        
+        self.newSessionButton = PushButton("New Session", self)
+        self.newSessionButton.setIcon(FIF.UPDATE)
+        self.newSessionButton.setToolTip("Start a new session (deletes all builds and content)")
+        self.newSessionButton.clicked.connect(self.onNewSession)
+        button_row.addWidget(self.newSessionButton)
+        
+        layout.addLayout(button_row)
+        
+        self.listWidget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.listWidget.customContextMenuRequested.connect(self.showContextMenu)
+    
+    def setSession(self, session):
+        self.session = session
+        self.refreshList()
+    
+    def refreshList(self):
+        if getattr(self, "_refreshing", False):
+            return
+
+        if not self.session:
+            return
+
+        self._refreshing = True
+        try:
+            self.listWidget.clear()
+            
+            show_delete_buttons = len(self.session.builds) > 1
+            
+            for build in self.session.builds:
+                status_icon = self.getStatusIcon(build.content_status)
+                
+                item_text = f"{status_icon} Build {build.part:02d}"
+                
+                item = QListWidgetItem()
+                item.setData(Qt.ItemDataRole.UserRole, build.id)
+                
+                self.listWidget.addItem(item)
+                
+                row_widget = QWidget()
+                row_layout = QHBoxLayout(row_widget)
+                row_layout.setContentsMargins(8, 4, 8, 4)
+                row_layout.setSpacing(8)
+                
+                checkbox = QCheckBox()
+                checkbox.setChecked(build.checked)
+                checkbox.setProperty("build_id", build.id)
+                checkbox.stateChanged.connect(self._onCheckboxStateChanged)
+                checkbox.setStyleSheet("""
+                    QCheckBox::indicator {
+                        width: 14px;
+                        height: 14px;
+                        border: 2px solid rgb(120, 120, 120);
+                        border-radius: 3px;
+                        background-color: rgb(35, 35, 35);
+                    }
+                    QCheckBox::indicator:hover {
+                        border: 2px solid rgb(180, 180, 180);
+                        background-color: rgb(50, 50, 50);
+                    }
+                    QCheckBox::indicator:checked {
+                        background-color: rgb(0, 120, 215);
+                        border: 2px solid rgb(0, 150, 255);
+                        image: url(data:image/svg+xml;base64,""" + CHECKBOX_CHECKMARK_BASE64 + """);
+                    }
+                    QCheckBox::indicator:unchecked {
+                        background-color: rgb(35, 35, 35);
+                        border: 2px solid rgb(120, 120, 120);
+                    }
+                """)
+                row_layout.addWidget(checkbox)
+                
+                text_label = QLabel(item_text)
+                text_label.setStyleSheet("color: white;")
+                row_layout.addWidget(text_label, 1)
+                
+                if show_delete_buttons:
+                    delete_btn = ToolButton(FIF.DELETE, row_widget)
+                    delete_btn.setFixedSize(24, 24)
+                    delete_btn.setToolTip("Delete this build")
+                    delete_btn.setProperty("build_id", build.id)
+                    delete_btn.clicked.connect(self._onDeleteButtonClicked)
+                    row_layout.addWidget(delete_btn)
+                
+                self.listWidget.setItemWidget(item, row_widget)
+            
+            if self.selected_build_id:
+                self.selectBuild(self.selected_build_id)
+            elif self.session.builds:
+                self.selectBuild(self.session.builds[0].id)
+        finally:
+            self._refreshing = False
+    
+    def getStatusIcon(self, status: str) -> str:
+        status_icons = {
+            "ready": "✅",
+            "incomplete": "⚠️",
+            "empty": "📭"
+        }
+        return status_icons.get(status, "📭")
+    
+    def selectBuild(self, build_id: str):
+        for i in range(self.listWidget.count()):
+            item = self.listWidget.item(i)
+            if item.data(Qt.ItemDataRole.UserRole) == build_id:
+                current_item = self.listWidget.currentItem()
+                current_build_id = (
+                    current_item.data(Qt.ItemDataRole.UserRole)
+                    if current_item is not None
+                    else None
+                )
+                if current_build_id != build_id:
+                    self.listWidget.setCurrentItem(item)
+                if build_id != self.selected_build_id:
+                    self.selected_build_id = build_id
+                    self.buildSelected.emit(build_id)
+                break
+    
+    def onItemClicked(self, item):
+        build_id = item.data(Qt.ItemDataRole.UserRole)
+        self.selected_build_id = build_id
+        self.buildSelected.emit(build_id)
+    
+    def _onCheckboxStateChanged(self, state):
+        if self._refreshing:
+            return
+
+        if not self.session:
+            return
+        
+        checkbox = self.sender()
+        if not checkbox:
+            return
+        
+        build_id = checkbox.property("build_id")
+        is_checked = checkbox.isChecked()
+        
+        for build in self.session.builds:
+            if build.id == build_id:
+                build.checked = is_checked
+                break
+        
+        self.buildCheckedChanged.emit(build_id, is_checked)
+    
+    def onRowsMoved(self, parent, start, end, destination, row):
+        if not self.session or self._refreshing:
+            return
+        
+        log.info(f"Drag-drop reorder detected: moved row {start} to position {row}")
+        
+        try:
+            new_order = []
+            for i in range(self.listWidget.count()):
+                item = self.listWidget.item(i)
+                if item:
+                    build_id = item.data(Qt.ItemDataRole.UserRole)
+                    if build_id:
+                        new_order.append(build_id)
+            
+            if len(new_order) != len(self.session.builds):
+                log.error(f"Reorder failed: UI has {len(new_order)} items but session has {len(self.session.builds)} builds")
+                self.refreshList()
+                return
+            
+            reorder_builds(self.session, new_order)
+            
+            self.refreshList()
+            
+            self.buildsReordered.emit()
+            
+            log.info("Build reordering completed successfully")
+            
+        except (ValueError, KeyError, AttributeError) as e:
+            log.error(f"Error during build reordering: {e}")
+            self.refreshList()
+            show_error(self.parent(), "Reorder Error", f"Failed to reorder builds: {e}")
+    
+    
+    def getCheckedBuilds(self):
+        if not self.session:
+            return []
+        return [build for build in self.session.builds if build.checked]
+    
+    def setChecked(self, build_id: str, checked: bool):
+        if not self.session:
+            return
+        
+        for build in self.session.builds:
+            if build.id == build_id:
+                build.checked = checked
+                break
+        
+        for i in range(self.listWidget.count()):
+            item = self.listWidget.item(i)
+            if item.data(Qt.ItemDataRole.UserRole) == build_id:
+                row_widget = self.listWidget.itemWidget(item)
+                if row_widget:
+                    checkbox = row_widget.findChild(QCheckBox)
+                    if checkbox:
+                        checkbox.blockSignals(True)
+                        checkbox.setChecked(checked)
+                        checkbox.blockSignals(False)
+                break
+    
+    def clearAllChecks(self):
+        if not self.session:
+            return
+        
+        for build in self.session.builds:
+            build.checked = False
+        
+        for i in range(self.listWidget.count()):
+            item = self.listWidget.item(i)
+            row_widget = self.listWidget.itemWidget(item)
+            if row_widget:
+                checkbox = row_widget.findChild(QCheckBox)
+                if checkbox:
+                    checkbox.blockSignals(True)
+                    checkbox.setChecked(False)
+                    checkbox.blockSignals(False)
+    
+    def onAddBuild(self):
+        if not self.session:
+            return
+        
+        self.buildAdded.emit()
+    
+    def onNewSession(self):
+        main_gui = self.parent()
+        if main_gui and hasattr(main_gui, 'onNewSession'):
+            main_gui.onNewSession()
+    
+    def showContextMenu(self, position):
+        item = self.listWidget.itemAt(position)
+        if not item:
+            return
+        
+        build_id = item.data(Qt.ItemDataRole.UserRole)
+        
+        menu = RoundMenu(parent=self)
+        
+        cleanAction = Action(FIF.DELETE, "Clean Content")
+        cleanAction.triggered.connect(lambda: self.onCleanContent(build_id))
+        menu.addAction(cleanAction)
+        
+        menu.exec(QCursor.pos())
+    
+    def _onDeleteButtonClicked(self):
+        sender = self.sender()
+        if sender:
+            build_id = sender.property("build_id")
+            if build_id:
+                self.onDeleteBuild(build_id)
+    
+    def onCleanContent(self, build_id: str):
+        if not self.session:
+            return
+        
+        build = None
+        for b in self.session.builds:
+            if b.id == build_id:
+                build = b
+                break
+        
+        if not build:
+            return
+        
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Clean Content")
+        msg.setText(f"Clean content for Build {build.part:02d}?")
+        msg.setInformativeText("This will delete all files including Manifest.dsx and Supplement.dsx.\nThis action cannot be undone.")
+        msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        msg.setDefaultButton(QMessageBox.StandardButton.No)
+        
+        if msg.exec() == QMessageBox.StandardButton.Yes:
+            try:
+                clean_build_content(build.folder)
+                build.content_status = "empty"
+                
+                main_gui = self.parent()
+                if main_gui and hasattr(main_gui, 'saveSession'):
+                    main_gui.saveSession()
+                
+                self.refreshList()
+                show_info(self.parent(), "Content Cleaned", f"Content cleaned for Build {build.part:02d}")
+            except Exception as e:
+                show_error(self.parent(), "Error", f"Failed to clean content: {e}")
+    
+    def onDeleteBuild(self, build_id: str):
+        if not self.session:
+            return
+        
+        build = None
+        for b in self.session.builds:
+            if b.id == build_id:
+                build = b
+                break
+        
+        if not build:
+            return
+        
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Delete Build")
+        msg.setText(f"Delete Build {build.part:02d}?")
+        msg.setInformativeText("This will delete the build folder and all its contents.")
+        msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        msg.setDefaultButton(QMessageBox.StandardButton.No)
+        
+        if msg.exec() == QMessageBox.StandardButton.Yes:
+            self.buildDeleted.emit(build_id)

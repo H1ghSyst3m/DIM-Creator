@@ -1,10 +1,50 @@
 # Changelog
-All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## v2.0.0
+
+### What's New in v2.0
+
+**Multi-Build Workspace**
+Work on several builds at once instead of one at a time. Create Build 01, 02, 03... and manage them together in a single session.
+
+**Batch Operations**
+- Package multiple builds together
+- Track progress for each build and overall completion
+- Get a summary report showing successes and failures
+- Check/uncheck builds to control which ones get processed
+
+**Archive Extraction Upgrades**
+- Process multiple archive files in one operation
+- Sort archives into three categories: templates, content to extract, and files to skip
+- Let the app detect templates automatically based on your preferences
+- Assign archives to specific build numbers
+
+**Workspace Changes**
+Your files now live in `Builds/Build001/Content/`, `Build002/Content/`, etc. instead of a single `DIMBuild/` folder.
+
+**Field Inheritance**
+Build 01 is the source for common fields. Build 02 and higher copy these values automatically. You can override any field in child builds when needed.
+
+**Synchronization Tools**
+- Push updates from Build 01 to all other builds
+- Pull latest values from Build 01 into a specific build
+- Sync individual fields (store, SKU, tags) or everything at once
+
+**Session Saves**
+All your builds save to `session.json` automatically. The app keeps 5 backup copies. When you reopen the app, everything comes back.
+
+**New UI Elements**
+- Visual status badges: ✅ ready, ⚠️ needs info, 📭 empty
+- Delete button on each build row
+- Drag builds to reorder them
+- "New Session" button to start over
+
+### Important Changes
+
+**Settings**: "Copy Template Archives" renamed to "Enable Template Detection" (clearer meaning)
 
 ---
+
 ## v1.2.1
 ### Changed
 - Updated dependencies in `requirements.txt` and `requirements-build.txt` to separate build-time and runtime packages.
