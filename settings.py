@@ -8,7 +8,7 @@ from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from qfluentwidgets import (
     setTheme, Theme, CheckBox, LineEdit, ToolButton, PushButton, PrimaryPushButton,
-    Pivot, FluentIcon as FIF, TableWidget, ListWidget, SubtitleLabel
+    Pivot, FluentIcon as FIF, TableWidget, ListWidget, SubtitleLabel, ComboBox
 )
 from logger_utils import get_logger
 from utils import tooltip_stylesheet, label_stylesheet
@@ -210,8 +210,20 @@ class SettingsDialog(QDialog):
         general_tab = QWidget(objectName="generalTab")
         g_layout = QVBoxLayout(general_tab)
 
-        self.copy_templates_checkbox = CheckBox("Copy Template Archives", general_tab)
-        g_layout.addWidget(self.copy_templates_checkbox)
+        org_label = SubtitleLabel("Output Organization:", general_tab)
+        g_layout.addWidget(org_label)
+        
+        self.output_org_combo = ComboBox(general_tab)
+        self.output_org_combo.addItems(["Flat", "By Date"])
+        self.output_org_combo.setToolTip(
+            "Flat: All ZIPs in destination folder\n"
+            "By Date: Create YYYY-MM-DD subfolder for each batch"
+        )
+        g_layout.addWidget(self.output_org_combo)
+        g_layout.addSpacing(12)
+
+        self.enable_template_detection_checkbox = CheckBox("Enable Template Detection", general_tab)
+        g_layout.addWidget(self.enable_template_detection_checkbox)
 
         path_layout = QHBoxLayout()
         self.template_destination_field = LineEdit(general_tab)

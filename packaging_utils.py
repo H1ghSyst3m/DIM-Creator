@@ -16,9 +16,10 @@ from utils import calculate_total_size, find_7z_executable, suppress_cmd_window
 
 log = get_logger(__name__)
 
+INTER_BUILD_DELAY_MS = 100
+
 
 def prettify(elem):
-    """Return a pretty-printed XML string for the Element."""
     rough_string = tostring(elem, 'utf-8')
     reparsed = minidom.parseString(rough_string)
     pretty = reparsed.toprettyxml(indent="  ")
@@ -27,7 +28,6 @@ def prettify(elem):
 
 @dataclass
 class PackageSpec:
-    """A data class to hold all parameters for a packaging job."""
     content_dir: str
     store: str
     product_name: str
@@ -42,8 +42,6 @@ class PackageSpec:
 
 
 class PackagingPipeline:
-    """Orchestrates the packaging process without UI/thread dependencies."""
-
     def __init__(self, spec: PackageSpec):
         self.spec = spec
         self.log = get_logger(__name__)
@@ -54,43 +52,27 @@ class PackagingPipeline:
             log.info("7-Zip executable not found, using built-in zipfile module.")
 
     def execute(self, callbacks: Dict[str, Callable[..., Any]]) -> tuple[bool, str]:
-        """
-        Executes the entire packaging pipeline.
-        
-        Args:
-            callbacks: A dictionary of callback functions, e.g., 
-                       {'progress': func(percent, message), 'error': func(message)}
-        
-        Returns:
-            A tuple (success, message).
-        """
         progress = callbacks.get('progress', lambda *args: None)
 
         try:
-            # Step 1: Clean support directory if requested
             if self.spec.clean_support:
                 progress(5, "Cleaning")
                 if not self._clean_support_directory():
                     return False, "Failed to clean the Support directory."
 
-            # Step 2: Process and paste image
             progress(10, "Processing Image")
             if not self._process_and_paste_image():
                 return False, "Image processing failed."
 
-            # Step 3: Create manifest
             progress(15, "Creating Manifest")
             if not self._create_manifest():
                 return False, "Manifest creation failed."
 
-            # Step 4: Create supplement
             progress(20, "Creating Supplement")
             if not self._create_supplement():
                 return False, "Supplement creation failed."
 
-            # Step 5: Zip everything
             def report_zip_progress(percent):
-                # Scale zipping progress from 25% to 100%
                 scaled_percent = 25 + int((percent / 100) * 75)
                 progress(scaled_percent, "Packaging")
 
@@ -104,7 +86,6 @@ class PackagingPipeline:
             return False, str(e)
 
     def _clean_support_directory(self) -> bool:
-        """Recursively delete the contents of the 'Runtime/Support' directory."""
         target_dir = os.path.join(self.spec.content_dir, "Runtime", "Support")
         if not os.path.exists(target_dir):
             return True
@@ -112,7 +93,6 @@ class PackagingPipeline:
         self.log.info("Attempting to clean Support Directory: %s", target_dir)
 
         def handle_remove_readonly(os_error: OSError):
-            """Clear the readonly bit and re-attempt the removal."""
             try:
                 path = os_error.filename
                 if not path:
@@ -147,7 +127,6 @@ class PackagingPipeline:
         return True
 
     def _process_and_paste_image(self) -> bool:
-        """Process and save the product image to the 'Runtime/Support' directory."""
         if not self.spec.image_path:
             self.log.info("No image path provided, skipping image processing.")
             return True
@@ -175,7 +154,6 @@ class PackagingPipeline:
             return False
 
     def _create_manifest(self) -> bool:
-        """Create the Manifest.dsx file."""
         self.log.info("Attempting to generate Product Manifest.")
         try:
             root = Element('DAZInstallManifest', VERSION="0.1")
@@ -200,7 +178,6 @@ class PackagingPipeline:
             return False
 
     def _create_supplement(self) -> bool:
-        """Create the Supplement.dsx file."""
         self.log.info("Attempting to generate Product Supplement.")
         try:
             root = Element('ProductSupplement', VERSION="0.1")
@@ -230,7 +207,6 @@ class PackagingPipeline:
         return f"{prefix_clean}{sku_formatted}-{part_str}_{sanitized_name}.zip"
 
     def _zip_package(self, progress_callback: Callable[[int], None]) -> bool:
-        """Create the final ZIP package."""
         zip_name = self._build_zip_name()
         zip_path = os.path.join(self.spec.destination_folder, zip_name)
         arc_base = os.path.dirname(self.spec.content_dir)
@@ -322,7 +298,6 @@ class PackagingPipeline:
 
 
 class PackagingWorker(QThread):
-    """A thin QThread wrapper that runs the PackagingPipeline."""
     progress = Signal(int, str)
     finished = Signal(bool, str)
 
@@ -336,3 +311,117 @@ class PackagingWorker(QThread):
         }
         success, message = self.pipeline.execute(callbacks)
         self.finished.emit(success, message)
+
+
+class BatchPackagingWorker(QThread):
+    overallProgress = Signal(int, int)
+    buildStarted = Signal(int, str, str)
+    buildProgress = Signal(int, str)
+    buildCompleted = Signal(int, bool, str, int, str)
+    allCompleted = Signal(dict)
+    cancelled = Signal()
+    
+    def __init__(self, build_specs, session, parent=None):
+        super().__init__(parent)
+        self.build_specs = build_specs
+        self.session = session
+        self.cancellation_requested = False
+        self.log = get_logger(__name__)
+    
+    def requestCancellation(self):
+        self.cancellation_requested = True
+        self.log.info("Cancellation requested for batch packaging")
+    
+    def run(self):
+        results = []
+        total_builds = len(self.build_specs)
+        
+        for index, (build, spec) in enumerate(self.build_specs):
+            if self.cancellation_requested:
+                for i in range(index, total_builds):
+                    remaining_build, _ = self.build_specs[i]
+                    results.append({
+                        'build': remaining_build,
+                        'success': False,
+                        'message': 'Cancelled by user',
+                        'file_size': 0,
+                        'output_path': None,
+                        'skipped': True
+                    })
+                break
+            
+            part_label = f"Build {build.part:02d}"
+            
+            if self.session:
+                from build_manager import get_build_data
+                build_data = get_build_data(self.session, build)
+                product_name = build_data.get('product_name', '') or "(No name)"
+            else:
+                product_name = build.product_name or "(No name)"
+            
+            self.buildStarted.emit(index, part_label, product_name)
+            
+            success = False
+            file_size = 0
+            output_path = None
+            
+            try:
+                pipeline = PackagingPipeline(spec)
+                
+                def progress_callback(percent, stage):
+                    if self.cancellation_requested:
+                        return
+                    self.buildProgress.emit(percent, stage)
+                
+                callbacks = {
+                    'progress': progress_callback
+                }
+                
+                success, message = pipeline.execute(callbacks)
+                
+                if success:
+                    zip_name = pipeline._build_zip_name()
+                    output_path = os.path.join(spec.destination_folder, zip_name)
+                    try:
+                        if os.path.exists(output_path):
+                            file_size = os.path.getsize(output_path)
+                    except OSError as e:
+                        self.log.warning(
+                            f"Could not determine file size for {output_path} "
+                            f"(file may have been moved or deleted): {e}"
+                        )
+                        file_size = -1
+            
+            except Exception as e:
+                self.log.exception(f"Unexpected error packaging build {index + 1}: {e}")
+                success = False
+                message = f"Unexpected error: {str(e)}"
+                file_size = 0
+                output_path = None
+            
+            self.buildCompleted.emit(index, success, message, file_size, output_path)
+            
+            results.append({
+                'build': build,
+                'success': success,
+                'message': message,
+                'file_size': file_size,
+                'output_path': output_path,
+                'skipped': False
+            })
+            
+            self.overallProgress.emit(index + 1, total_builds)
+            self.msleep(INTER_BUILD_DELAY_MS)
+        
+        if self.cancellation_requested:
+            self.cancelled.emit()
+        
+        summary = {
+            'results': results,
+            'total': total_builds,
+            'successful': sum(1 for r in results if r['success'] and not r.get('skipped', False)),
+            'failed': sum(1 for r in results if not r['success'] and not r.get('skipped', False)),
+            'skipped': sum(1 for r in results if r.get('skipped', False))
+        }
+        
+        self.allCompleted.emit(summary)
