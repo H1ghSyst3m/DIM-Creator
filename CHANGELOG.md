@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.0.1
+
+### Fixed
+- File Explorer now refreshes properly after clearing a build or starting a new session.
+
 ## v2.0.0
 
 ### What's New in v2.0
@@ -42,8 +47,6 @@ All your builds save to `session.json` automatically. The app keeps 5 backup cop
 ### Important Changes
 
 **Settings**: "Copy Template Archives" renamed to "Enable Template Detection" (clearer meaning)
-
----
 
 ## v1.2.1
 ### Changed

@@ -249,6 +249,7 @@ class DIMPackageGUI(QWidget):
         
         content_dir = get_build_content_dir(first_build.folder)
         if hasattr(self, 'fileExplorer'):
+            self.fileExplorer.reset_model()
             self.fileExplorer.setRootPath(content_dir)
         
         self.saveSession()
@@ -1273,6 +1274,9 @@ class DIMPackageGUI(QWidget):
         os.makedirs(content_dir, exist_ok=True)
         
         log.info(f"Build folder successfully cleared: {build_path}")
+        
+        if hasattr(self, 'fileExplorer'):
+            self.fileExplorer.reset_model()
         
         if self.current_build:
             self.current_build.content_status = "empty"
