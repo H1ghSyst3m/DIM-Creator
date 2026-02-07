@@ -1285,6 +1285,26 @@ class FileExplorer(QWidget):
                 if self.model.canFetchMore(content_index):
                     self.model.fetchMore(content_index)
                 self.treeView.expand(content_index)
+    
+    def reset_model(self):
+        current_path = self.current_path
+        
+        old_model = self.model
+        self.model = QFileSystemModel()
+        self.model.setRootPath('')
+        self.treeView.setModel(self.model)
+        
+        if old_model:
+            old_model.deleteLater()
+        
+        if not os.path.exists(current_path):
+            return
+            
+        specificIndex = self.model.index(current_path)
+        self.treeView.setRootIndex(specificIndex)
+        
+        if specificIndex.isValid() and self.model.canFetchMore(specificIndex):
+            self.model.fetchMore(specificIndex)
 
 
 class BuildListWidget(QWidget):
@@ -1661,6 +1681,9 @@ class BuildListWidget(QWidget):
                 main_gui = self.parent()
                 if main_gui and hasattr(main_gui, 'saveSession'):
                     main_gui.saveSession()
+                
+                if main_gui and hasattr(main_gui, 'fileExplorer'):
+                    main_gui.fileExplorer.reset_model()
                 
                 self.refreshList()
                 show_info(self.parent(), "Content Cleaned", f"Content cleaned for Build {build.part:02d}")
