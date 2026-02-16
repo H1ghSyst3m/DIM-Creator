@@ -1568,7 +1568,7 @@ class DIMPackageGUI(QWidget):
                 product_part=build.part,
                 product_tags=build_data.get('tags', 'DAZStudio4_5'),
                 image_path=build_data.get('image_path', ''),
-                clean_support=self.clean_support_checkbox.isChecked() if hasattr(self, 'clean_support_checkbox') else False,
+                clean_support=self.support_clean_input.isChecked(),
                 guid=build.guid,
                 destination_folder=destination_folder
             )
