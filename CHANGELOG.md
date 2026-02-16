@@ -4,6 +4,7 @@
 
 ### Fixed
 - File Explorer now refreshes properly after clearing a build or starting a new session.
+- Fixed "Clean Support Directory" checkbox being ignored during batch packaging operations ("Package All" and "Package Selected").
 
 ## v2.0.0
 
