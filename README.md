@@ -118,7 +118,7 @@ pyinstaller -y DIM-Creator.spec
 ## Screenshot
 
 <p align="center">
-  <img width="781" height="721" alt="DIM-Creator main window" src="https://github.com/user-attachments/assets/f6744257-5d39-429b-acfc-c01c8ee74186" />
+  <img width="1092" height="830" alt="DIM-Creator main window" src="docs/images/main-window.png" />
 </p>
 
 ## Contributing
