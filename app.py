@@ -5,7 +5,6 @@ import shutil
 import zipfile
 import stat
 import uuid
-import re
 import patoolib
 import ctypes
 import shiboken6
@@ -54,6 +53,7 @@ from widgets import (
     FileExplorer, BuildListWidget
 )
 from packaging_utils import PackagingWorker, PackageSpec, BatchPackagingWorker
+from naming_utils import build_dim_zip_filename
 from extraction_utils import (
     ContentExtractionWorker, MultiBuildExtractionWorker,
     classify_archives, detect_heuristic_ordering
@@ -781,15 +781,7 @@ class DIMPackageGUI(QWidget):
         part_val = self.product_part_input.value()
         name_raw = self.product_name_input.text() or "Package"
 
-        prefix_clean = re.sub(r'[^A-Za-z0-9]+', '', str(prefix_raw)).upper() or "IM"
-        try:
-            sku_formatted = f"{int(str(sku_raw)):08d}"
-        except ValueError:
-            sku_formatted = (str(sku_raw) or "").zfill(8) if sku_raw else "00000000"
-        part_str = f"{int(part_val):02d}"
-        sanitized_name = re.sub(r'[^A-Za-z0-9._-]+', '_', str(name_raw)).strip('_') or "Package"
-
-        return f"{prefix_clean}{sku_formatted}-{part_str}_{sanitized_name}.zip"
+        return build_dim_zip_filename(prefix_raw, sku_raw, part_val, name_raw)
 
     def updateZipPreview(self):
         try:
