@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- DIM package ZIP names now use DIM-compatible product name segments so archives with spaces, underscores, hyphens, or dots in the product name are recognized correctly.
+- Runtime/Support cover image names now normalize dots the same way DIM support metadata does, preventing missing Smart Content covers for products such as `G8.1`.
+
 ## v2.0.1
 
 ### Fixed
