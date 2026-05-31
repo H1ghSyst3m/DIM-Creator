@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Any
 
 from logger_utils import get_logger
+from naming_utils import build_dim_zip_filename, build_support_cover_filename
 from utils import calculate_total_size, find_7z_executable, suppress_cmd_window
 
 log = get_logger(__name__)
@@ -133,9 +134,11 @@ class PackagingPipeline:
 
         self.log.info("Attempting to generate Product cover from: %s", self.spec.image_path)
         try:
-            sanitized_product_name = re.sub(r'[^A-Za-z0-9._-]+', '_', self.spec.product_name).strip('_')
-            store_formatted = re.sub(r'[^A-Za-z0-9._-]+', '_', self.spec.store).strip('_')
-            new_image_name = f"{store_formatted}_{self.spec.sku}_{sanitized_product_name}.jpg"
+            new_image_name = build_support_cover_filename(
+                self.spec.store,
+                self.spec.sku,
+                self.spec.product_name,
+            )
 
             target_dir = os.path.join(self.spec.content_dir, "Runtime", "Support")
             os.makedirs(target_dir, exist_ok=True)
@@ -196,15 +199,12 @@ class PackagingPipeline:
             return False
 
     def _build_zip_name(self) -> str:
-        prefix_clean = re.sub(r'[^A-Za-z0-9]+', '', str(self.spec.prefix)).upper()
-        try:
-            sku_formatted = f"{int(str(self.spec.sku)):08d}"
-        except ValueError:
-            sku_formatted = str(self.spec.sku).zfill(8)
-
-        part_str = f"{int(self.spec.product_part):02d}"
-        sanitized_name = re.sub(r'[^A-Za-z0-9._-]+', '_', str(self.spec.product_name)).strip('_')
-        return f"{prefix_clean}{sku_formatted}-{part_str}_{sanitized_name}.zip"
+        return build_dim_zip_filename(
+            self.spec.prefix,
+            self.spec.sku,
+            self.spec.product_part,
+            self.spec.product_name,
+        )
 
     def _zip_package(self, progress_callback: Callable[[int], None]) -> bool:
         zip_name = self._build_zip_name()
