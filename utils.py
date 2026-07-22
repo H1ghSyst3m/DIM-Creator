@@ -6,7 +6,6 @@ import shutil
 import stat
 from pathlib import Path
 from contextlib import contextmanager
-from datetime import datetime
 from PySide6.QtCore import QFile, QStandardPaths, Qt
 from qfluentwidgets import InfoBar, InfoBarPosition
 from logger_utils import get_logger
@@ -471,42 +470,6 @@ def clean_build_content(folder_name: str) -> None:
     os.makedirs(content_dir, exist_ok=True)
 
 
-def create_session_backup() -> None:
-    if not os.path.exists(SESSION_FILE):
-        return
-    
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    backup_name = f"session_{timestamp}.json"
-    backup_path = os.path.join(SESSION_BACKUPS_DIR, backup_name)
-    
-    shutil.copy2(SESSION_FILE, backup_path)
-    
-    try:
-        backups = sorted([
-            f for f in os.listdir(SESSION_BACKUPS_DIR)
-            if f.startswith("session_") and f.endswith(".json")
-        ])
-    except OSError:
-        backups = []
-    
-    while len(backups) > 5:
-        oldest = backups.pop(0)
-        try:
-            os.remove(os.path.join(SESSION_BACKUPS_DIR, oldest))
-        except OSError as e:
-            log.error(f"Failed to delete old backup {oldest}: {e}")
-            
-
-
-def delete_session_file() -> None:
-    if os.path.exists(SESSION_FILE):
-        try:
-            os.remove(SESSION_FILE)
-            log.info("Session file deleted")
-        except OSError as e:
-            log.error(f"Failed to delete session file: {e}")
-            raise
-
 
 def delete_all_build_folders(handle_error_callback=None) -> list[str]:
     if not os.path.exists(BUILDS_DIR):
@@ -519,7 +482,7 @@ def delete_all_build_folders(handle_error_callback=None) -> list[str]:
     try:
         for item in os.listdir(BUILDS_DIR):
             item_path = os.path.join(BUILDS_DIR, item)
-            
+
             if os.path.lexists(item_path) and re.match(r'^Build\d+$', item):
                 try:
                     item_path = _checked_build_path(item)
@@ -537,6 +500,6 @@ def delete_all_build_folders(handle_error_callback=None) -> list[str]:
     except OSError as e:
         log.error(f"Failed to access Builds directory: {e}")
         raise
-    
+
     return failed
 

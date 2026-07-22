@@ -40,7 +40,7 @@ from utils import (
     show_error, show_info, show_success, show_warning,
     ensure_builds_directory_structure, create_build_folder, clean_build_content,
     get_build_content_dir, get_build_dir,
-    SESSION_FILE, delete_session_file, delete_all_build_folders,
+    SESSION_FILE, delete_all_build_folders,
     IGNORE_SYSTEM_FILES, format_file_size
 )
 from logger_utils import get_logger
@@ -50,14 +50,14 @@ from widgets import (
 )
 from packaging_utils import (
     BatchPackagingWorker, PackageInventory, PackageSpec, PackagingError,
-    PackagingWorker, validate_package_destination, validate_package_spec,
+    validate_package_destination, validate_package_spec,
 )
 from naming_utils import (
     build_dim_zip_filename, validate_dim_part, validate_dim_prefix,
     validate_dim_sku,
 )
 from extraction_utils import (
-    ArchiveImportPlan, ArchivePlanningResult, ArchivePlanningWorker,
+    ArchivePlanningResult, ArchivePlanningWorker,
     ConflictPolicy, ContentExtractionWorker, ExtractionResult,
     ExtractionRollbackError,
     MultiBuildExtractionWorker,
@@ -68,7 +68,8 @@ from updater import UpdateManager
 from version import APP_VERSION
 from session import (
     Build, Session, SessionRecoveryError, UnsupportedSessionVersionError,
-    create_default_session, load_session_result, save_session,
+    create_default_session, delete_session_artifacts, load_session_result,
+    save_session,
 )
 from operation_state import OperationState
 from build_manager import (
@@ -274,7 +275,7 @@ class DIMPackageGUI(QWidget):
                 log.warning(f"Some build folders failed to delete: {failed}")
                 return (True, failed)
 
-            delete_session_file()
+            delete_session_artifacts(SESSION_FILE, include_backups=True)
             
             log.info("Cleanup complete")
             return (True, failed)
@@ -1696,6 +1697,14 @@ class DIMPackageGUI(QWidget):
             if replace != QMessageBox.StandardButton.Yes:
                 return
 
+        approved_replacements = {
+            os.path.abspath(path).casefold() for path in existing_outputs
+        }
+        for (_, spec), output_path in zip(build_specs, output_paths):
+            spec.replace_existing = (
+                os.path.abspath(output_path).casefold() in approved_replacements
+            )
+
         progress_dialog = BatchProgressDialog(len(builds_to_package), self)
         for build in builds_to_package:
             part_label = f"Build {build.part:02d}"
@@ -1962,16 +1971,24 @@ class DIMPackageGUI(QWidget):
             ):
                 self._setOperationState(OperationState.IDLE)
 
-    def _askConflictPolicy(self):
+    def _askConflictPolicy(self, conflicts):
+        conflicts = tuple(conflicts)
         dialog = QMessageBox(self)
         dialog.setWindowTitle("Existing Files")
-        dialog.setText("How should existing files be handled during this import?")
-        dialog.setInformativeText(
-            "This choice is applied once to the complete import. Cancel is the "
-            "safe default."
+        dialog.setText(
+            f"{len(conflicts)} existing file(s) conflict with this import."
         )
-        replace_button = dialog.addButton("Replace", QMessageBox.ButtonRole.AcceptRole)
-        skip_button = dialog.addButton("Skip", QMessageBox.ButtonRole.DestructiveRole)
+        preview = "\n".join(
+            f"• {os.path.basename(path)}" for path in conflicts[:5]
+        )
+        if len(conflicts) > 5:
+            preview += f"\n• … and {len(conflicts) - 5} more"
+        dialog.setInformativeText(
+            f"{preview}\n\nThis choice is applied once to the complete import. "
+            "Cancel is the safe default."
+        )
+        replace_button = dialog.addButton("Replace", QMessageBox.ButtonRole.DestructiveRole)
+        skip_button = dialog.addButton("Skip", QMessageBox.ButtonRole.ActionRole)
         cancel_button = dialog.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
         dialog.setDefaultButton(cancel_button)
         dialog.exec()
@@ -1981,16 +1998,32 @@ class DIMPackageGUI(QWidget):
         if clicked is skip_button:
             return ConflictPolicy.SKIP
         return ConflictPolicy.CANCEL
+
+    def _onExtractionConflicts(self, conflicts):
+        worker = self.sender()
+        if (
+            worker is not getattr(self, "extractionWorker", None)
+            or self.operation_state is OperationState.CLOSING
+        ):
+            if worker is not None:
+                worker.resolveConflictPolicy(ConflictPolicy.CANCEL)
+            return
+
+        policy = self._askConflictPolicy(conflicts)
+        if self.operation_state is OperationState.CLOSING:
+            policy = ConflictPolicy.CANCEL
+        worker.resolveConflictPolicy(policy)
+
+    def _cancelPendingArchiveImport(self, message="Extraction cancelled."):
+        plan = getattr(self, "_archive_import_plan", None)
+        if plan is not None:
+            plan.cleanup()
+        self._archive_import_plan = None
+        self.showExtractionState(False, message, success=False)
+        if self.operation_state is not OperationState.CLOSING:
+            self._setOperationState(OperationState.IDLE)
     
     def _extractDirectly(self, archive_file_path):
-        conflict_policy = self._askConflictPolicy()
-        if conflict_policy is ConflictPolicy.CANCEL:
-            if isinstance(archive_file_path, ArchiveImportPlan):
-                archive_file_path.cleanup()
-                self._archive_import_plan = None
-            if self.operation_state is not OperationState.CLOSING:
-                self._setOperationState(OperationState.IDLE)
-            return
         self._setOperationState(OperationState.EXTRACTING)
         self.showExtractionState(True)
         log.info("Extraction started...")
@@ -2003,12 +2036,13 @@ class DIMPackageGUI(QWidget):
             self.enable_template_detection,
             self.template_destination,
             parent=self,
-            conflict_policy=conflict_policy,
             defer_finalize=True,
+            prompt_on_conflicts=True,
         )
         self.extractionWorker = w
         self._pending_extraction_results += 1
         w.resultReady.connect(self._consumeExtractionResult)
+        w.conflictsDetected.connect(self._onExtractionConflicts)
         w.finished.connect(self._finishExtractionWorker)
         w.finished.connect(w.deleteLater)
         w.start()
@@ -2038,10 +2072,7 @@ class DIMPackageGUI(QWidget):
             if not content_list and not template_list:
                 show_warning(self, "No Archives Selected", 
                            "No archives selected for extraction.")
-                if import_plan is not None:
-                    import_plan.cleanup()
-                    self._archive_import_plan = None
-                self._setOperationState(OperationState.IDLE)
+                self._cancelPendingArchiveImport("No archives were selected.")
                 return
 
             if archive_map is not None:
@@ -2049,10 +2080,9 @@ class DIMPackageGUI(QWidget):
                     content_list = [archive_map[path] for path in content_list]
                     template_list = [archive_map[path] for path in template_list]
                 except KeyError as exc:
-                    if import_plan is not None:
-                        import_plan.cleanup()
-                    self._archive_import_plan = None
-                    self._setOperationState(OperationState.IDLE)
+                    self._cancelPendingArchiveImport(
+                        "The archive selection could not be applied."
+                    )
                     show_error(self, "Archive Selection Error", str(exc))
                     return
 
@@ -2061,22 +2091,11 @@ class DIMPackageGUI(QWidget):
             )
         else:
             log.info("Extraction cancelled by user")
-            if import_plan is not None:
-                import_plan.cleanup()
-                self._archive_import_plan = None
-            self._setOperationState(OperationState.IDLE)
+            self._cancelPendingArchiveImport()
     
     def _startMultiBuildExtraction(
         self, content_archives, template_archives, *, import_plan=None,
     ):
-        conflict_policy = self._askConflictPolicy()
-        if conflict_policy is ConflictPolicy.CANCEL:
-            if import_plan is not None:
-                import_plan.cleanup()
-                self._archive_import_plan = None
-            if self.operation_state is not OperationState.CLOSING:
-                self._setOperationState(OperationState.IDLE)
-            return
         self._setOperationState(OperationState.EXTRACTING)
         self.showExtractionState(True)
         log.info("Starting multi-build extraction...")
@@ -2089,13 +2108,14 @@ class DIMPackageGUI(QWidget):
             self.enable_template_detection,
             self.template_destination,
             parent=self,
-            conflict_policy=conflict_policy,
             import_plan=import_plan,
             defer_finalize=True,
+            prompt_on_conflicts=True,
         )
         self.extractionWorker = w
         self._pending_extraction_results += 1
         w.resultReady.connect(self._consumeExtractionResult)
+        w.conflictsDetected.connect(self._onExtractionConflicts)
         w.extractionProgress.connect(self.onExtractionProgress)
         w.finished.connect(self._finishExtractionWorker)
         w.finished.connect(w.deleteLater)
@@ -2223,7 +2243,7 @@ class DIMPackageGUI(QWidget):
                 )
             show_success(
                 self, "Extraction Complete",
-                f"Successfully imported {len(result.modified_builds) or 1} build(s).",
+                self._extractionSuccessMessage(result),
                 Qt.Vertical, InfoBarPosition.BOTTOM_RIGHT,
             )
         elif result.cancelled:
@@ -2241,6 +2261,22 @@ class DIMPackageGUI(QWidget):
                 self, "Extraction failed", result.message,
                 Qt.Vertical, InfoBarPosition.BOTTOM_RIGHT, True, 5000,
             )
+
+    @staticmethod
+    def _extractionSuccessMessage(result: ExtractionResult) -> str:
+        if result.modified_builds:
+            return f"Successfully imported {len(result.modified_builds)} build(s)."
+        if result.copied_templates:
+            return (
+                "Successfully copied "
+                f"{len(result.copied_templates)} template archive(s)."
+            )
+        if result.skipped_files:
+            return (
+                "No files were imported; "
+                f"{len(result.skipped_files)} existing file(s) were skipped."
+            )
+        return "Import completed without file changes."
 
     def _finishExtractionWorker(self):
         worker = self.sender()

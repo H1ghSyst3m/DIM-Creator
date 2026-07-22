@@ -14,6 +14,7 @@ from session import (
     SessionSaveError,
     UnsupportedSessionVersionError,
     create_default_session,
+    delete_session_artifacts,
     load_session_result,
     save_session,
 )
@@ -165,12 +166,17 @@ class SessionPersistenceTests(unittest.TestCase):
             older.builds[0].product_name = "Older"
             newer = create_default_session()
             newer.builds[0].product_name = "Newer"
-            older_path = backup_dir / "older.json"
-            newer_path = backup_dir / "newer.json"
+            older_path = backup_dir / "session_older.json"
+            newer_path = backup_dir / "session_newer.json"
+            foreign = create_default_session()
+            foreign.builds[0].product_name = "Foreign"
+            foreign_path = backup_dir / "another-session.json"
             older_path.write_text(json.dumps(older.to_dict()), encoding="utf-8")
             newer_path.write_text(json.dumps(newer.to_dict()), encoding="utf-8")
+            foreign_path.write_text(json.dumps(foreign.to_dict()), encoding="utf-8")
             os.utime(older_path, (1, 1))
             os.utime(newer_path, (2, 2))
+            os.utime(foreign_path, (3, 3))
             path.write_text("{broken", encoding="utf-8")
 
             result = load_session_result(str(path))
@@ -182,6 +188,44 @@ class SessionPersistenceTests(unittest.TestCase):
                 json.loads(path.read_text(encoding="utf-8"))["builds"][0]["product_name"],
                 "Newer",
             )
+
+    def test_missing_primary_ignores_foreign_json_backup(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "session.json"
+            backup_dir = path.parent / "backups"
+            backup_dir.mkdir()
+            foreign = backup_dir / "other.json"
+            foreign.write_text(
+                json.dumps(create_default_session().to_dict()),
+                encoding="utf-8",
+            )
+
+            result = load_session_result(str(path))
+
+            self.assertEqual(result.source, "new")
+            self.assertIsNone(result.session)
+            self.assertFalse(path.exists())
+
+    def test_explicit_cleanup_removes_primary_and_its_backups_only(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "session.json"
+            session = create_default_session()
+            save_session(session, str(path))
+            session.builds[0].product_name = "Changed"
+            save_session(session, str(path))
+            backup_dir = path.parent / "backups"
+            foreign = backup_dir / "other.json"
+            foreign.write_text("{}", encoding="utf-8")
+            quarantine = path.parent / "session.corrupt-kept.json"
+            quarantine.write_text("broken", encoding="utf-8")
+
+            delete_session_artifacts(path, include_backups=True)
+
+            self.assertFalse(path.exists())
+            self.assertEqual(list(backup_dir.glob("session_*.json")), [])
+            self.assertTrue(foreign.exists())
+            self.assertTrue(quarantine.exists())
+            self.assertEqual(load_session_result(str(path)).source, "new")
 
     def test_corrupt_primary_without_backup_requires_explicit_recovery(self):
         with tempfile.TemporaryDirectory() as temp_dir:

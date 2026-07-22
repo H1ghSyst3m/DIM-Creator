@@ -2,6 +2,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import tempfile
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -373,6 +374,13 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 def _backup_path_for(path: Path) -> Path:
     backup_dir = path.parent / "backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
+    backup_stat = backup_dir.lstat()
+    if (
+        not stat.S_ISDIR(backup_stat.st_mode)
+        or backup_dir.is_symlink()
+        or _is_reparse_point(backup_stat)
+    ):
+        raise OSError(f"Session backup directory is unsafe: {backup_dir}")
     return backup_dir / f"{path.stem}_{_unique_stamp()}_{uuid.uuid4().hex}.json"
 
 
@@ -395,20 +403,19 @@ def _create_backup(path: Path) -> Path:
 
 
 def _prune_backups(path: Path) -> None:
-    backup_dir = path.parent / "backups"
     try:
-        backups = sorted(
-            backup_dir.glob(f"{path.stem}_*.json"),
-            key=lambda item: item.stat().st_mtime_ns,
-            reverse=True,
-        )
+        backups = _backup_candidates(path)
         for backup in backups[MAX_SESSION_BACKUPS:]:
             try:
                 backup.unlink()
             except OSError as exc:
                 log.warning("Could not remove old session backup %s: %s", backup, exc)
     except OSError as exc:
-        log.warning("Could not prune session backups in %s: %s", backup_dir, exc)
+        log.warning(
+            "Could not prune session backups in %s: %s",
+            path.parent / "backups",
+            exc,
+        )
 
 
 def _quarantine(path: Path) -> Path:
@@ -419,22 +426,88 @@ def _quarantine(path: Path) -> Path:
     return quarantine
 
 
-def _valid_backups(path: Path) -> list[tuple[Path, Session]]:
+def _is_reparse_point(path_stat: os.stat_result) -> bool:
+    flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return bool(getattr(path_stat, "st_file_attributes", 0) & flag)
+
+
+def _backup_candidates(path: Path, *, strict: bool = False) -> list[Path]:
     backup_dir = path.parent / "backups"
-    if not backup_dir.is_dir():
+    try:
+        backup_stat = backup_dir.lstat()
+    except FileNotFoundError:
         return []
-    candidates = sorted(
-        (item for item in backup_dir.glob("*.json") if item.is_file()),
-        key=lambda item: item.stat().st_mtime_ns,
-        reverse=True,
-    )
+    except OSError:
+        if strict:
+            raise
+        log.warning("Cannot inspect session backup directory %s", backup_dir)
+        return []
+
+    if (
+        not stat.S_ISDIR(backup_stat.st_mode)
+        or backup_dir.is_symlink()
+        or _is_reparse_point(backup_stat)
+    ):
+        message = f"Session backup directory is unsafe: {backup_dir}"
+        if strict:
+            raise OSError(message)
+        log.warning(message)
+        return []
+
+    candidates: list[tuple[int, Path]] = []
+    for item in backup_dir.glob(f"{path.stem}_*.json"):
+        try:
+            item_stat = item.lstat()
+        except OSError as exc:
+            if strict:
+                raise
+            log.warning("Cannot inspect session backup %s: %s", item, exc)
+            continue
+        if (
+            not stat.S_ISREG(item_stat.st_mode)
+            or item.is_symlink()
+            or _is_reparse_point(item_stat)
+        ):
+            if strict:
+                raise OSError(f"Session backup is not a regular file: {item}")
+            log.warning("Ignoring unsafe session backup %s", item)
+            continue
+        candidates.append((item_stat.st_mtime_ns, item))
+    candidates.sort(key=lambda candidate: candidate[0], reverse=True)
+    return [item for _, item in candidates]
+
+
+def _valid_backups(path: Path) -> list[tuple[Path, Session]]:
     valid: list[tuple[Path, Session]] = []
-    for candidate in candidates:
+    for candidate in _backup_candidates(path):
         try:
             valid.append((candidate, _read_session_file(candidate)))
         except (OSError, UnicodeError, json.JSONDecodeError, SessionError, TypeError) as exc:
             log.warning("Ignoring invalid session backup %s: %s", candidate, exc)
     return valid
+
+
+def delete_session_artifacts(
+    path: str | os.PathLike[str],
+    *,
+    include_backups: bool = False,
+) -> None:
+    target = Path(path)
+    backups = _backup_candidates(target, strict=True) if include_backups else []
+
+    if target.exists() or target.is_symlink():
+        target_stat = target.lstat()
+        if (
+            not stat.S_ISREG(target_stat.st_mode)
+            or target.is_symlink()
+            or _is_reparse_point(target_stat)
+        ):
+            raise OSError(f"Session file is not a regular file: {target}")
+
+    for backup in backups:
+        backup.unlink()
+    if target.exists():
+        target.unlink()
 
 
 def save_session(session: Session, path: str) -> None:

@@ -6,4 +6,3 @@ class OperationState(Enum):
     EXTRACTING = "extracting"
     PACKAGING = "packaging"
     CLOSING = "closing"
-

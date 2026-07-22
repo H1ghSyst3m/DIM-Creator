@@ -185,6 +185,7 @@ class PackageSpec:
     guid: str
     destination_folder: str
     recognized_content_roots: Optional[tuple[str, ...]] = None
+    replace_existing: bool = False
 
 
 class PackagingError(RuntimeError):
@@ -469,7 +470,7 @@ class PackagingPipeline:
                 self._check_cancelled()
                 self._flush_file(temp_zip)
                 file_size = temp_zip.stat().st_size
-                os.replace(temp_zip, final_path)
+                self._publish_archive(temp_zip, final_path)
 
             progress(100, "Complete")
             self.log.info("DIM package created at: %s", final_path)
@@ -520,6 +521,21 @@ class PackagingPipeline:
         if self._is_cancelled():
             raise PackagingCancelled("Cancelled by user")
 
+    def _publish_archive(self, temporary: Path, final_path: Path) -> None:
+        if self.spec.replace_existing:
+            os.replace(temporary, final_path)
+            return
+        try:
+            if os.name == "nt":
+                os.rename(temporary, final_path)
+            else:
+                os.link(temporary, final_path, follow_symlinks=False)
+                temporary.unlink()
+        except FileExistsError as exc:
+            raise PackagingError(
+                "Package output exists but was not approved for replacement."
+            ) from exc
+
     def _validate_spec(self) -> Path:
         try:
             validate_dim_prefix(self.spec.prefix)
@@ -538,6 +554,8 @@ class PackagingPipeline:
             raise PackagingError("Product tags must be text.")
         if not isinstance(self.spec.clean_support, bool):
             raise PackagingError("Clean Support must be a boolean value.")
+        if not isinstance(self.spec.replace_existing, bool):
+            raise PackagingError("Replace Existing must be a boolean value.")
         content_only_tags = {
             tag.strip().casefold()
             for tag in self.spec.product_tags.split(",")

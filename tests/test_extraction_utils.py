@@ -453,7 +453,13 @@ class ContentExtractionWorkerTests(unittest.TestCase):
         self.space_patch.start()
         self.addCleanup(self.space_patch.stop)
 
-    def _worker(self, archive, policy=extraction.ConflictPolicy.CANCEL):
+    def _worker(
+        self,
+        archive,
+        policy=extraction.ConflictPolicy.CANCEL,
+        *,
+        prompt_on_conflicts=False,
+    ):
         return extraction.ContentExtractionWorker(
             archive,
             {"Runtime", "People", "data"},
@@ -461,6 +467,7 @@ class ContentExtractionWorkerTests(unittest.TestCase):
             True,
             self.template_dir,
             conflict_policy=policy,
+            prompt_on_conflicts=prompt_on_conflicts,
         )
 
     @staticmethod
@@ -660,6 +667,88 @@ class ContentExtractionWorkerTests(unittest.TestCase):
             self.assertEqual(current.read(), b"old")
         self.assertTrue(os.path.isfile(os.path.join(runtime, "new.txt")))
         self.assertEqual(len(worker.result.skipped_files), 1)
+
+    def test_interactive_import_does_not_prompt_without_exact_conflicts(self):
+        runtime = os.path.join(self.content_dir, "Runtime")
+        os.makedirs(runtime)
+        with open(os.path.join(runtime, "unrelated.txt"), "wb") as output:
+            output.write(b"existing")
+        archive = os.path.join(self.temp.name, "product.zip")
+        _write_zip(archive, {"Runtime/new.txt": b"new"})
+        worker = self._worker(archive, prompt_on_conflicts=True)
+        prompts = []
+        worker.conflictsDetected.connect(prompts.append)
+
+        worker.run()
+
+        self.assertEqual(worker.result.status, "success")
+        self.assertEqual(prompts, [])
+        self.assertEqual(worker.result.modified_builds, ["Build001"])
+
+    def test_interactive_import_prompts_once_for_content_and_template_conflicts(self):
+        runtime = os.path.join(self.content_dir, "Runtime")
+        os.makedirs(runtime)
+        existing_content = os.path.join(runtime, "existing.txt")
+        with open(existing_content, "wb") as output:
+            output.write(b"old")
+        os.makedirs(self.template_dir)
+        existing_template = os.path.join(self.template_dir, "Product Templates.zip")
+        with open(existing_template, "wb") as output:
+            output.write(b"old template")
+        template = _zip_bytes({"readme.txt": b"template"})
+        archive = os.path.join(self.temp.name, "product.zip")
+        _write_zip(
+            archive,
+            {
+                "Runtime/existing.txt": b"replacement",
+                "Product Templates.zip": template,
+            },
+        )
+        worker = self._worker(archive, prompt_on_conflicts=True)
+        prompts = []
+
+        def skip(conflicts):
+            prompts.append(tuple(conflicts))
+            worker.resolveConflictPolicy(extraction.ConflictPolicy.SKIP)
+
+        worker.conflictsDetected.connect(skip)
+        worker.run()
+
+        self.assertEqual(worker.result.status, "success")
+        self.assertEqual(len(prompts), 1)
+        self.assertEqual(
+            {os.path.abspath(path).casefold() for path in prompts[0]},
+            {
+                os.path.abspath(existing_content).casefold(),
+                os.path.abspath(existing_template).casefold(),
+            },
+        )
+        self.assertEqual(worker.result.modified_builds, [])
+        self.assertEqual(worker.result.copied_templates, [])
+        self.assertEqual(len(worker.result.skipped_files), 2)
+
+    def test_cancelling_interactive_conflict_wait_rolls_back_without_changes(self):
+        runtime = os.path.join(self.content_dir, "Runtime")
+        os.makedirs(runtime)
+        existing = os.path.join(runtime, "existing.txt")
+        with open(existing, "wb") as output:
+            output.write(b"old")
+        archive = os.path.join(self.temp.name, "product.zip")
+        _write_zip(archive, {"Runtime/existing.txt": b"replacement"})
+        worker = self._worker(archive, prompt_on_conflicts=True)
+        prompts = []
+
+        def cancel(conflicts):
+            prompts.append(tuple(conflicts))
+            worker.requestCancellation()
+
+        worker.conflictsDetected.connect(cancel)
+        worker.run()
+
+        self.assertEqual(worker.result.status, "cancelled")
+        self.assertEqual(len(prompts), 1)
+        with open(existing, "rb") as current:
+            self.assertEqual(current.read(), b"old")
 
     def test_cooperative_cancellation_emits_only_cancelled_terminal_status(self):
         archive = os.path.join(self.temp.name, "product.zip")
@@ -898,6 +987,35 @@ class MultiBuildExtractionWorkerTests(unittest.TestCase):
         self.assertTrue(
             os.path.isfile(os.path.join(self.builds_dir, "Build002", "Content", "People", "two.txt"))
         )
+
+    def test_interactive_multi_build_import_skips_prompt_for_empty_targets(self):
+        build = Build(
+            id="build_001",
+            folder="Build001",
+            part=1,
+            guid=str(uuid.uuid4()),
+            content_status="empty",
+        )
+        session = Session(builds=[build], next_build_number=2)
+        archive = os.path.join(self.temp.name, "Product.zip")
+        _write_zip(archive, {"Runtime/new.txt": b"new"})
+        worker = extraction.MultiBuildExtractionWorker(
+            [archive],
+            [],
+            {"Runtime"},
+            session,
+            True,
+            self.templates_dir,
+            prompt_on_conflicts=True,
+        )
+        prompts = []
+        worker.conflictsDetected.connect(prompts.append)
+
+        worker.run()
+
+        self.assertEqual(worker.result.status, "success")
+        self.assertEqual(prompts, [])
+        self.assertEqual(worker.result.modified_builds, ["Build001"])
 
     def test_error_emits_one_typed_result_and_leaves_session_unchanged(self):
         build = Build(
@@ -1213,6 +1331,46 @@ class TransactionRollbackTests(unittest.TestCase):
 
                 with open(target, "rb") as current:
                     self.assertEqual(current.read(), b"racer")
+
+    def test_interactive_commit_prompts_once_for_a_late_conflict(self):
+        source = os.path.join(self.temp.name, "late.txt")
+        target_root = os.path.join(self.temp.name, "late-target")
+        target = os.path.join(target_root, "late.txt")
+        os.makedirs(target_root)
+        with open(source, "wb") as output:
+            output.write(b"incoming")
+        transaction = extraction._FileTransaction(extraction.ConflictPolicy.CANCEL)
+        transaction.add_file(source, target_root)
+        gate = extraction._ConflictDecisionGate()
+        prompts = []
+
+        def race_publish(_temporary, target_path):
+            with open(target_path, "wb") as output:
+                output.write(b"racer")
+            raise FileExistsError(target_path)
+
+        def choose_skip(conflicts):
+            prompts.append(tuple(conflicts))
+            gate.resolve(extraction.ConflictPolicy.SKIP)
+
+        with mock.patch.object(
+            transaction,
+            "_publish_without_replace",
+            side_effect=race_publish,
+        ):
+            extraction._commit_with_optional_prompt(
+                transaction,
+                prompt_on_conflicts=True,
+                gate=gate,
+                emit_conflicts=choose_skip,
+                cancel_check=lambda: False,
+            )
+
+        self.assertEqual(prompts, [(target,)])
+        self.assertEqual(transaction.applied, [])
+        self.assertEqual(transaction.skipped, [target])
+        with open(target, "rb") as current:
+            self.assertEqual(current.read(), b"racer")
 
     def test_replace_keeps_existing_file_visible_until_copy_finishes(self):
         source = os.path.join(self.temp.name, "replacement.txt")

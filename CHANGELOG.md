@@ -37,6 +37,11 @@
 - Updated the GitHub Actions workflow to run tests before building and to use restricted permissions.
 
 ### Fixed
+- Fixed the existing-files prompt appearing when an archive had no actual file conflicts.
+- Fixed cancelled archive selections leaving the extraction status visible.
+- Fixed cleaned sessions being restored from old backups and unrelated JSON files being used for recovery.
+- Fixed package files created after the replacement confirmation being overwritten without approval.
+- Fixed template-only and fully skipped imports reporting a build as modified.
 - Fixed existing packages being overwritten when packaging failed or was cancelled.
 - Fixed support cleanup and metadata generation changing files in the build folder.
 - Fixed invalid session values being used in package filenames and output paths.

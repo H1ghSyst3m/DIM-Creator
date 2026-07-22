@@ -1,21 +1,28 @@
 import os
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEventLoop, QObject, QTimer, Qt, Slot
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 
 import app as app_module
+import extraction_utils as extraction_module
 import widgets as widgets_module
 from app import DIMPackageGUI
 from dialogs.exit_dialog import ExitDialog
-from extraction_utils import ExtractionRollbackError
+from extraction_utils import (
+    ConflictPolicy,
+    ContentExtractionWorker,
+    ExtractionResult,
+    ExtractionRollbackError,
+)
 from operation_state import OperationState
 from utils import (
     has_reparse_component,
@@ -302,6 +309,134 @@ class OperationStateTests(unittest.TestCase):
         DIMPackageGUI._onArchivePlanningResult(gui, result)
 
         self.assertEqual(states, [OperationState.IDLE])
+
+    def test_pre_worker_import_cancel_cleans_plan_tooltip_and_busy_state(self):
+        plan = SimpleNamespace(cleaned=0)
+        plan.cleanup = lambda: setattr(plan, "cleaned", plan.cleaned + 1)
+        extraction_states = []
+        operation_states = []
+        gui = SimpleNamespace(
+            _archive_import_plan=plan,
+            operation_state=OperationState.EXTRACTING,
+            showExtractionState=lambda *args, **kwargs: extraction_states.append(
+                (args, kwargs)
+            ),
+            _setOperationState=operation_states.append,
+        )
+
+        DIMPackageGUI._cancelPendingArchiveImport(gui, "Cancelled")
+
+        self.assertEqual(plan.cleaned, 1)
+        self.assertIsNone(gui._archive_import_plan)
+        self.assertEqual(extraction_states, [((False, "Cancelled"), {"success": False})])
+        self.assertEqual(operation_states, [OperationState.IDLE])
+
+    def test_extraction_success_messages_report_actual_changes(self):
+        cases = (
+            (
+                ExtractionResult("success", modified_builds=["Build001", "Build002"]),
+                "Successfully imported 2 build(s).",
+            ),
+            (
+                ExtractionResult("success", copied_templates=["Template.zip"]),
+                "Successfully copied 1 template archive(s).",
+            ),
+            (
+                ExtractionResult("success", skipped_files=["one", "two"]),
+                "No files were imported; 2 existing file(s) were skipped.",
+            ),
+            (
+                ExtractionResult("success"),
+                "Import completed without file changes.",
+            ),
+        )
+
+        for result, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertEqual(
+                    DIMPackageGUI._extractionSuccessMessage(result),
+                    expected,
+                )
+
+    def test_conflict_decision_reaches_a_running_qthread(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            content = Path(temp_dir) / "Build001" / "Content"
+            runtime = content / "Runtime"
+            templates = Path(temp_dir) / "Templates"
+            runtime.mkdir(parents=True)
+            existing = runtime / "existing.txt"
+            existing.write_bytes(b"old")
+            archive = Path(temp_dir) / "product.zip"
+            with zipfile.ZipFile(archive, "w") as package:
+                package.writestr("Runtime/existing.txt", b"replacement")
+
+            worker = ContentExtractionWorker(
+                str(archive),
+                {"Runtime"},
+                str(content),
+                True,
+                str(templates),
+                prompt_on_conflicts=True,
+            )
+
+            class Receiver(QObject):
+                def __init__(self):
+                    super().__init__()
+                    self.conflicts = []
+
+                @Slot(object)
+                def resolve(self, conflicts):
+                    self.conflicts.append(tuple(conflicts))
+                    worker.resolveConflictPolicy(ConflictPolicy.SKIP)
+
+            receiver = Receiver()
+            worker.conflictsDetected.connect(receiver.resolve)
+            loop = QEventLoop()
+            timed_out = []
+            timer = QTimer()
+            timer.setSingleShot(True)
+
+            def abort_wait():
+                timed_out.append(True)
+                worker.requestCancellation()
+                loop.quit()
+
+            timer.timeout.connect(abort_wait)
+            worker.finished.connect(loop.quit)
+            with patch.object(extraction_module, "MIN_FREE_SPACE_BYTES", 0):
+                worker.start()
+                timer.start(5000)
+                loop.exec()
+                if worker.isRunning():
+                    worker.requestCancellation()
+                    worker.wait(2000)
+            timer.stop()
+
+            self.assertEqual(timed_out, [])
+            self.assertEqual(len(receiver.conflicts), 1)
+            self.assertEqual(worker.result.status, "success")
+            self.assertEqual(worker.result.modified_builds, [])
+            self.assertEqual(existing.read_bytes(), b"old")
+            worker.deleteLater()
+
+    def test_session_cleanup_deletes_managed_backups(self):
+        gui = SimpleNamespace(
+            _save_timer=_StubTimer(),
+            handle_remove_readonly=lambda *_args: None,
+        )
+
+        with (
+            patch.object(app_module, "delete_all_build_folders", return_value=[]),
+            patch.object(app_module, "delete_session_artifacts") as delete_artifacts,
+        ):
+            success, failed = DIMPackageGUI.performSessionCleanup(gui)
+
+        self.assertTrue(success)
+        self.assertEqual(failed, [])
+        delete_artifacts.assert_called_once_with(
+            app_module.SESSION_FILE,
+            include_backups=True,
+        )
 
     def test_exit_dialog_can_be_constructed(self):
         parent = QWidget()

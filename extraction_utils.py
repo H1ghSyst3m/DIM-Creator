@@ -1650,7 +1650,6 @@ class _FileTransaction:
     ) -> list[tuple[_TransactionEntry, str, bool]]:
         planned = []
         destinations = {}
-        conflicts = []
         for entry in self.entries:
             _check_cancelled(cancel_check)
             target, exists = self._resolve_case_path(
@@ -1665,14 +1664,19 @@ class _FileTransaction:
             if exists:
                 if os.path.isdir(target):
                     raise ExtractionError(f"A directory blocks the imported file: {target}")
-                conflicts.append(target)
             planned.append((entry, target, exists))
-        if conflicts and self.policy is ConflictPolicy.CANCEL:
-            preview = ", ".join(os.path.basename(path) for path in conflicts[:5])
-            raise ExtractionConflict(
-                f"Extraction cancelled because {len(conflicts)} file conflict(s) were found: {preview}"
-            )
         return planned
+
+    def preflight_conflicts(
+        self,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> tuple[str, ...]:
+        """Return exact existing file targets without modifying the destination."""
+        return tuple(
+            target
+            for _, target, exists in self._planned(cancel_check)
+            if exists
+        )
 
     def _ensure_directory(self, directory: str) -> None:
         missing = []
@@ -1736,6 +1740,12 @@ class _FileTransaction:
 
     def commit(self, cancel_check: Callable[[], bool]) -> None:
         planned = self._planned(cancel_check)
+        conflicts = [target for _, target, exists in planned if exists]
+        if conflicts and self.policy is ConflictPolicy.CANCEL:
+            preview = ", ".join(os.path.basename(path) for path in conflicts[:5])
+            raise ExtractionConflict(
+                f"Extraction cancelled because {len(conflicts)} file conflict(s) were found: {preview}"
+            )
         required_by_volume: dict[tuple[str, int | str], tuple[str, int]] = {}
         for entry, _, exists in planned:
             if not (exists and self.policy is ConflictPolicy.SKIP):
@@ -1972,6 +1982,85 @@ def _result_after_rollback(
         skipped_files=list(skipped_files),
         errors=[] if status == "cancelled" else [original_message],
     )
+
+
+class _ConflictDecisionGate:
+    def __init__(self) -> None:
+        self._condition = threading.Condition()
+        self._response: ConflictPolicy | None = None
+        self._waiting = False
+        self._cancelled = False
+
+    def resolve(self, policy: ConflictPolicy | str) -> None:
+        response = ConflictPolicy.coerce(policy)
+        with self._condition:
+            if not self._waiting:
+                return
+            self._response = response
+            self._condition.notify_all()
+
+    def cancel(self) -> None:
+        with self._condition:
+            self._cancelled = True
+            self._condition.notify_all()
+
+    def wait(
+        self,
+        conflicts: Sequence[str],
+        emit: Callable[[object], None],
+        cancel_check: Callable[[], bool],
+    ) -> ConflictPolicy:
+        with self._condition:
+            self._response = None
+            self._waiting = True
+        try:
+            emit(tuple(conflicts))
+            with self._condition:
+                while self._response is None:
+                    if self._cancelled or cancel_check():
+                        raise ExtractionCancelled("Extraction cancelled.")
+                    self._condition.wait(timeout=0.1)
+                return self._response
+        finally:
+            with self._condition:
+                self._waiting = False
+
+
+def _commit_with_optional_prompt(
+    transaction: _FileTransaction,
+    *,
+    prompt_on_conflicts: bool,
+    gate: _ConflictDecisionGate,
+    emit_conflicts: Callable[[object], None],
+    cancel_check: Callable[[], bool],
+) -> None:
+    if not prompt_on_conflicts:
+        transaction.commit(cancel_check)
+        return
+
+    transaction.policy = ConflictPolicy.CANCEL
+    conflicts = transaction.preflight_conflicts(cancel_check)
+    prompted = False
+    if conflicts:
+        prompted = True
+        policy = gate.wait(conflicts, emit_conflicts, cancel_check)
+        if policy is ConflictPolicy.CANCEL:
+            raise ExtractionCancelled("Extraction cancelled.")
+        transaction.policy = policy
+
+    try:
+        transaction.commit(cancel_check)
+    except ExtractionConflict:
+        if prompted:
+            raise
+        conflicts = transaction.preflight_conflicts(cancel_check)
+        if not conflicts:
+            raise
+        policy = gate.wait(conflicts, emit_conflicts, cancel_check)
+        if policy is ConflictPolicy.CANCEL:
+            raise ExtractionCancelled("Extraction cancelled.")
+        transaction.policy = policy
+        transaction.commit(cancel_check)
 
 
 def _planned_archive(
@@ -2222,6 +2311,7 @@ class ContentExtractionWorker(QThread):
     extractionComplete = Signal()
     extractionError = Signal(str)
     resultReady = Signal(object)
+    conflictsDetected = Signal(object)
 
     def __init__(
         self,
@@ -2234,6 +2324,7 @@ class ContentExtractionWorker(QThread):
         conflict_policy: ConflictPolicy | str = ConflictPolicy.CANCEL,
         import_plan: ArchiveImportPlan | None = None,
         defer_finalize: bool = False,
+        prompt_on_conflicts: bool = False,
     ):
         super().__init__(parent)
         if isinstance(archive_file_path, ArchiveImportPlan):
@@ -2249,6 +2340,8 @@ class ContentExtractionWorker(QThread):
         self.template_destination = template_destination or downloads_dir()
         self.conflict_policy = ConflictPolicy.coerce(conflict_policy)
         self.defer_finalize = bool(defer_finalize)
+        self.prompt_on_conflicts = bool(prompt_on_conflicts)
+        self._conflict_gate = _ConflictDecisionGate()
         self.copiedTemplates: list[str] = []
         self.result: ExtractionResult | None = None
 
@@ -2257,6 +2350,10 @@ class ContentExtractionWorker(QThread):
 
     def requestCancellation(self) -> None:
         self.requestInterruption()
+        self._conflict_gate.cancel()
+
+    def resolveConflictPolicy(self, policy: ConflictPolicy | str) -> None:
+        self._conflict_gate.resolve(policy)
 
     def _publish_result(self, result: ExtractionResult) -> None:
         self.result = result
@@ -2303,17 +2400,32 @@ class ContentExtractionWorker(QThread):
                             os.path.basename(template),
                         )
                     )
-                transaction.commit(self._cancelled)
+                _commit_with_optional_prompt(
+                    transaction,
+                    prompt_on_conflicts=self.prompt_on_conflicts,
+                    gate=self._conflict_gate,
+                    emit_conflicts=self.conflictsDetected.emit,
+                    cancel_check=self._cancelled,
+                )
                 applied = {os.path.abspath(path).casefold() for path in transaction.applied}
                 self.copiedTemplates = [
                     name for path, name in template_targets if path in applied
                 ]
+                content_prefix = (
+                    os.path.abspath(self.content_dir).casefold().rstrip(os.sep)
+                    + os.sep
+                )
+                modified_builds = (
+                    [os.path.basename(os.path.dirname(self.content_dir))]
+                    if any(path.startswith(content_prefix) for path in applied)
+                    else []
+                )
                 if not self.defer_finalize:
                     transaction.finalize()
             result = ExtractionResult(
                 "success",
                 "Extraction completed successfully.",
-                modified_builds=[os.path.basename(os.path.dirname(self.content_dir))],
+                modified_builds=modified_builds,
                 copied_templates=list(self.copiedTemplates),
                 skipped_files=list(transaction.skipped),
                 _transaction=transaction if self.defer_finalize else None,
@@ -2403,6 +2515,7 @@ class MultiBuildExtractionWorker(QThread):
     extractionError = Signal(str)
     extractionProgress = Signal(str)
     resultReady = Signal(object)
+    conflictsDetected = Signal(object)
 
     def __init__(
         self,
@@ -2416,6 +2529,7 @@ class MultiBuildExtractionWorker(QThread):
         conflict_policy: ConflictPolicy | str = ConflictPolicy.CANCEL,
         import_plan: ArchiveImportPlan | None = None,
         defer_finalize: bool = False,
+        prompt_on_conflicts: bool = False,
     ):
         super().__init__(parent)
         self.content_archives = [
@@ -2432,6 +2546,8 @@ class MultiBuildExtractionWorker(QThread):
         self.template_destination = template_destination or downloads_dir()
         self.conflict_policy = ConflictPolicy.coerce(conflict_policy)
         self.defer_finalize = bool(defer_finalize)
+        self.prompt_on_conflicts = bool(prompt_on_conflicts)
+        self._conflict_gate = _ConflictDecisionGate()
         self.copiedTemplates: list[str] = []
         self.modified_builds: list[str] = []
         self.result: ExtractionResult | None = None
@@ -2452,6 +2568,10 @@ class MultiBuildExtractionWorker(QThread):
 
     def requestCancellation(self) -> None:
         self.requestInterruption()
+        self._conflict_gate.cancel()
+
+    def resolveConflictPolicy(self, policy: ConflictPolicy | str) -> None:
+        self._conflict_gate.resolve(policy)
 
     def _publish_result(self, result: ExtractionResult) -> None:
         self.result = result
@@ -2662,7 +2782,13 @@ class MultiBuildExtractionWorker(QThread):
                         )
                     )
 
-                transaction.commit(self._cancelled)
+                _commit_with_optional_prompt(
+                    transaction,
+                    prompt_on_conflicts=self.prompt_on_conflicts,
+                    gate=self._conflict_gate,
+                    emit_conflicts=self.conflictsDetected.emit,
+                    cancel_check=self._cancelled,
+                )
                 applied_paths = [os.path.abspath(path).casefold() for path in transaction.applied]
                 self.modified_builds = []
                 build_updates = []

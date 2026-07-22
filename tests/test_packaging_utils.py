@@ -229,8 +229,8 @@ class PackagingPipelineTests(PackagingTestCase):
             "70127-1",
         )
 
-    def test_fresh_archive_removes_stale_members(self):
-        spec = self._spec()
+    def test_approved_replacement_removes_stale_members(self):
+        spec = self._spec(replace_existing=True)
         final_path = self._output_path(spec)
         with zipfile.ZipFile(final_path, "w") as archive:
             archive.writestr("stale.txt", "old")
@@ -243,8 +243,45 @@ class PackagingPipelineTests(PackagingTestCase):
         with zipfile.ZipFile(final_path) as archive:
             self.assertNotIn("stale.txt", archive.namelist())
 
-    def test_failed_verification_preserves_existing_archive(self):
+    def test_unapproved_existing_output_is_preserved(self):
         spec = self._spec()
+        final_path = self._output_path(spec)
+        with zipfile.ZipFile(final_path, "w") as archive:
+            archive.writestr("old.txt", "preserve me")
+        original = final_path.read_bytes()
+        pipeline = PackagingPipeline(spec)
+        pipeline.seven_zip_path = None
+
+        result = pipeline.execute({})
+
+        self.assertFalse(result.success)
+        self.assertIn("not approved", result.message)
+        self.assertEqual(final_path.read_bytes(), original)
+
+    def test_output_appearing_after_validation_is_not_replaced(self):
+        spec = self._spec()
+        final_path = self._output_path(spec)
+        pipeline = PackagingPipeline(spec)
+        pipeline.seven_zip_path = None
+        real_verify = pipeline._verify_archive
+
+        def verify_then_create_output(*args, **kwargs):
+            real_verify(*args, **kwargs)
+            final_path.write_bytes(b"concurrent output")
+
+        with mock.patch.object(
+            pipeline,
+            "_verify_archive",
+            side_effect=verify_then_create_output,
+        ):
+            result = pipeline.execute({})
+
+        self.assertFalse(result.success)
+        self.assertIn("not approved", result.message)
+        self.assertEqual(final_path.read_bytes(), b"concurrent output")
+
+    def test_failed_verification_preserves_existing_archive(self):
+        spec = self._spec(replace_existing=True)
         final_path = self._output_path(spec)
         with zipfile.ZipFile(final_path, "w") as archive:
             archive.writestr("old.txt", "valid old archive")
@@ -264,7 +301,7 @@ class PackagingPipelineTests(PackagingTestCase):
         self.assertFalse(any(self.destination.glob(".dimcreator-package-*")))
 
     def test_failed_atomic_replace_preserves_existing_archive(self):
-        spec = self._spec()
+        spec = self._spec(replace_existing=True)
         final_path = self._output_path(spec)
         with zipfile.ZipFile(final_path, "w") as archive:
             archive.writestr("old.txt", "valid old archive")
@@ -390,6 +427,7 @@ class PackagingPipelineTests(PackagingTestCase):
             {"sku": "../70127"},
             {"product_part": 100},
             {"product_tags": "Plugin"},
+            {"replace_existing": 1},
         ):
             with self.subTest(changes=changes):
                 result = self._pipeline(**changes).execute({})
@@ -425,7 +463,7 @@ class PackagingPipelineTests(PackagingTestCase):
 
     @unittest.skipUnless(find_7z_executable(), "7-Zip is not installed")
     def test_real_7z_backend_uses_the_same_verified_inventory(self):
-        spec = self._spec()
+        spec = self._spec(replace_existing=True)
         final_path = self._output_path(spec)
         with zipfile.ZipFile(final_path, "w") as archive:
             archive.writestr("stale.txt", "must not survive")
