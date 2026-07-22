@@ -2,20 +2,22 @@ import os
 import shutil
 import tempfile
 import base64
+import uuid
 
 from PySide6.QtWidgets import (
     QMessageBox, QWidget, QLabel, QDialog, QVBoxLayout, QFileDialog,
     QHBoxLayout, QFileSystemModel, QListWidget, QListWidgetItem, QCheckBox
 )
 from PySide6.QtCore import (
-    Qt, QThread, Signal, QEasingCurve, QUrl, QTimer
+    QByteArray, QBuffer, QIODevice, Qt, QThread, Signal, QEasingCurve,
+    QUrl, QTimer
 )
 from PySide6.QtNetwork import (
     QNetworkAccessManager, QNetworkRequest, QNetworkReply
 )
 from PySide6.QtGui import (
-    QPixmap, QImage, QCursor, QDesktopServices, QKeySequence,
-    QShortcut
+    QPixmap, QImage, QImageReader, QCursor, QDesktopServices,
+    QKeySequence, QShortcut
 )
 from qfluentwidgets import (
     setTheme, Theme, PrimaryPushButton, PushButton, Action, RoundMenu, LineEdit,
@@ -25,7 +27,12 @@ from qfluentwidgets import (
 )
 from qfluentwidgets import FluentIcon as FIF
 
-from utils import resource_path, show_warning, show_error, show_info, get_build_content_dir, clean_build_content
+from utils import (
+    COVERS_DIR, canonical_path, clean_build_content, get_build_content_dir,
+    has_reparse_component, has_reparse_point, is_path_within, move_to_trash, resource_path,
+    safe_child_path, show_error, show_info, show_warning,
+    validate_windows_name,
+)
 from build_manager import validate_build, get_build_data, reorder_builds
 from logger_utils import get_logger
 
@@ -127,6 +134,10 @@ class CustomCompactSpinBox(CompactSpinBox):
 
 class ImageLabel(QLabel):
     imageChanged = Signal(str)
+
+    MAX_IMAGE_BYTES = 20 * 1024 * 1024
+    MAX_IMAGE_PIXELS = 40_000_000
+    DOWNLOAD_TIMEOUT_MS = 15_000
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -136,6 +147,10 @@ class ImageLabel(QLabel):
         self.placeholder_image_rel = os.path.join('assets', 'images', 'placeholder', 'imageexport.png')
         self.placeholder_max_px = 96
         self._load_seq = 0
+        self._active_reply = None
+        self._download_timer = QTimer(self)
+        self._download_timer.setSingleShot(True)
+        self._download_timer.timeout.connect(self._abort_active_download)
 
         self._is_placeholder = True
         self._orig_pixmap = None
@@ -203,33 +218,95 @@ class ImageLabel(QLabel):
         self._ownedTemp = False
         self.removeImageButton.hide()
 
-    def resetToPlaceholder(self):
+    def resetToPlaceholder(self, *, emit=True):
+        self._abort_active_download()
         self.loadPlaceholderImage()
-        self.imageChanged.emit("")
+        if emit:
+            self.imageChanged.emit("")
 
-    def setImagePath(self, path):
-        if not path or not os.path.exists(path):
-            self.resetToPlaceholder()
-            return
-        pm = QPixmap(path)
-        if pm.isNull():
-            self.resetToPlaceholder()
+    def _read_image_file(self, path: str) -> QImage:
+        try:
+            size_bytes = os.path.getsize(path)
+        except OSError:
+            return QImage()
+        if not os.path.isfile(path) or size_bytes > self.MAX_IMAGE_BYTES:
+            return QImage()
+        reader = QImageReader(path)
+        reader.setAutoTransform(True)
+        size = reader.size()
+        if (not size.isValid() or size.width() * size.height() > self.MAX_IMAGE_PIXELS):
+            return QImage()
+        return reader.read()
+
+    def _read_image_bytes(self, data: bytes) -> QImage:
+        if not data or len(data) > self.MAX_IMAGE_BYTES:
+            return QImage()
+        buffer = QBuffer(self)
+        buffer.setData(QByteArray(data))
+        if not buffer.open(QIODevice.OpenModeFlag.ReadOnly):
+            return QImage()
+        reader = QImageReader(buffer)
+        reader.setDecideFormatFromContent(True)
+        reader.setAutoTransform(True)
+        size = reader.size()
+        if (not size.isValid() or size.width() * size.height() > self.MAX_IMAGE_PIXELS):
+            return QImage()
+        return reader.read()
+
+    def _persist_image(self, image: QImage) -> str:
+        if image.isNull() or image.width() * image.height() > self.MAX_IMAGE_PIXELS:
+            raise ValueError("Image is invalid or exceeds 40 megapixels")
+        os.makedirs(COVERS_DIR, exist_ok=True)
+        final_path = os.path.join(COVERS_DIR, f"cover-{uuid.uuid4().hex}.jpg")
+        fd, temp_path = tempfile.mkstemp(prefix=".cover-", suffix=".tmp", dir=COVERS_DIR)
+        os.close(fd)
+        try:
+            if not image.convertToFormat(QImage.Format.Format_RGB888).save(
+                    temp_path, "JPEG", 92):
+                raise OSError("Could not encode cover as JPEG")
+            if os.path.getsize(temp_path) > self.MAX_IMAGE_BYTES:
+                raise ValueError("Normalized cover exceeds 20 MiB")
+            os.replace(temp_path, final_path)
+            return final_path
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+    def _show_image(self, image: QImage, path: str, *, emit=True):
+        pixmap = QPixmap.fromImage(image)
+        if pixmap.isNull():
+            self.resetToPlaceholder(emit=emit)
             return
         self.imagePath = path
         self._ownedTemp = False
-        self._orig_pixmap = pm
+        self._orig_pixmap = pixmap
         self._is_placeholder = False
         self._apply_scaled_pixmap()
         self.removeImageButton.show()
         self.updateButtonPosition()
-        self.imageChanged.emit(path)
+        if emit:
+            self.imageChanged.emit(path)
+
+    def setImagePath(self, path):
+        if not path:
+            self.resetToPlaceholder()
+            return
+        image = self._read_image_file(path)
+        if image.isNull():
+            self.resetToPlaceholder()
+            return
+        self._abort_active_download()
+        managed_path = path
+        if not is_path_within(path, COVERS_DIR) or has_reparse_point(path):
+            try:
+                managed_path = self._persist_image(image)
+            except (OSError, ValueError) as exc:
+                log.warning("Could not persist cover '%s': %s", path, exc)
+                self.resetToPlaceholder()
+                return
+        self._show_image(image, managed_path)
 
     def removeImage(self):
-        try:
-            if self._ownedTemp and self.imagePath and os.path.exists(self.imagePath):
-                os.remove(self.imagePath)
-        except Exception:
-            pass
         self.resetToPlaceholder()
 
     def updateButtonPosition(self):
@@ -283,17 +360,7 @@ class ImageLabel(QLabel):
 
             if not handled:
                 for u in local_urls:
-                    local_path = u.toLocalFile()
-                    try:
-                        sys_tmp = os.path.abspath(tempfile.gettempdir())
-                        if os.path.commonpath([os.path.abspath(local_path), sys_tmp]) == sys_tmp:
-                            self._adopt_local_as_temp(local_path)
-                        else:
-                            self.setImagePath(local_path)
-                        handled = True
-                        break
-                    except Exception:
-                        self._adopt_local_as_temp(local_path)
+                    if self._adopt_local_as_temp(u.toLocalFile()):
                         handled = True
                         break
 
@@ -314,7 +381,7 @@ class ImageLabel(QLabel):
             "Image Files (*.png *.jpg *.jpeg *.bmp *.webp)"
         )
         if filePath:
-            self.setImagePath(filePath)
+            self._adopt_local_as_temp(filePath)
 
     def enterEvent(self, event):
         self.setStyleSheet(
@@ -331,13 +398,31 @@ class ImageLabel(QLabel):
 
     def _download_first_valid(self, urls, seq):
         if not urls:
+            self._active_reply = None
             return
 
+        self._abort_active_download(invalidate=False)
         url = urls[0]
         req = QNetworkRequest(url)
+        req.setTransferTimeout(self.DOWNLOAD_TIMEOUT_MS)
         reply = self._nam.get(req)
+        self._active_reply = reply
+        self._download_timer.start(self.DOWNLOAD_TIMEOUT_MS)
+
+        length = reply.header(QNetworkRequest.KnownHeaders.ContentLengthHeader)
+        if length is not None and int(length) > self.MAX_IMAGE_BYTES:
+            reply.abort()
+
+        def _progress(received, _total):
+            if received > self.MAX_IMAGE_BYTES:
+                reply.abort()
+
+        reply.downloadProgress.connect(_progress)
 
         def _finished():
+            self._download_timer.stop()
+            if self._active_reply is reply:
+                self._active_reply = None
             if seq != self._load_seq:
                 reply.deleteLater()
                 return
@@ -348,102 +433,65 @@ class ImageLabel(QLabel):
                     self._download_first_valid(urls[1:], seq)
                     return
 
-                data = reply.readAll()
-                pm = QPixmap()
-                if not pm.loadFromData(bytes(data)):
+                data = bytes(reply.readAll())
+                image = self._read_image_bytes(data)
+                if image.isNull():
                     reply.deleteLater()
                     self._download_first_valid(urls[1:], seq)
                     return
-
-                fd, temp_path = tempfile.mkstemp(prefix="dimcreator_img_", suffix=".jpg")
-                os.close(fd)
-                pm.toImage().save(temp_path)
                 if seq == self._load_seq:
-                    self._set_owned_temp_path(temp_path)
-                else:
                     try:
-                        os.remove(temp_path)
-                    except Exception:
-                        pass
+                        self._show_image(image, self._persist_image(image))
+                    except (OSError, ValueError) as exc:
+                        log.warning("Could not persist downloaded cover: %s", exc)
+                        self._download_first_valid(urls[1:], seq)
 
             finally:
                 reply.deleteLater()
 
         reply.finished.connect(_finished)
+
+    def _abort_active_download(self, *, invalidate=True):
+        if invalidate:
+            self._load_seq += 1
+        reply = self._active_reply
+        self._active_reply = None
+        self._download_timer.stop()
+        if reply is not None and not reply.isFinished():
+            reply.abort()
 
     def _adopt_qimage_as_temp(self, qimg: QImage, suffix=".png"):
         try:
-            fd, temp_path = tempfile.mkstemp(prefix="dimcreator_img_", suffix=suffix)
-            os.close(fd)
-            qimg.save(temp_path)
-            self._set_owned_temp_path(temp_path)
-        except Exception:
-            self.resetToPlaceholder()
+            self._abort_active_download()
+            self._show_image(qimg, self._persist_image(qimg))
+            return True
+        except (OSError, ValueError):
+            return False
 
     def _adopt_local_as_temp(self, src_path: str):
         try:
-            ext = os.path.splitext(src_path)[1] or ".png"
-            fd, temp_path = tempfile.mkstemp(prefix="dimcreator_img_", suffix=ext)
-            os.close(fd)
-            shutil.copy2(src_path, temp_path)
-            self._set_owned_temp_path(temp_path)
-        except Exception:
-            self.resetToPlaceholder()
+            self._abort_active_download()
+            image = self._read_image_file(src_path)
+            if image.isNull():
+                raise ValueError("Invalid or oversized image")
+            self._show_image(image, self._persist_image(image))
+            return True
+        except (OSError, ValueError):
+            return False
 
     def _set_owned_temp_path(self, temp_path: str):
-        try:
-            if self._ownedTemp and self.imagePath and os.path.exists(self.imagePath):
-                os.remove(self.imagePath)
-        except Exception:
-            pass
-
-        pm = QPixmap(temp_path)
-        if pm.isNull():
-            try:
-                os.remove(temp_path)
-            except Exception:
-                pass
-            self.resetToPlaceholder()
-            return
-
-        self.imagePath = temp_path
-        self._ownedTemp = True
-        self._orig_pixmap = pm
-        self._is_placeholder = False
-        self._apply_scaled_pixmap()
-        self.removeImageButton.show()
-        self.updateButtonPosition()
+        self._adopt_local_as_temp(temp_path)
 
     def _download_url_to_temp(self, url: QUrl):
-        req = QNetworkRequest(url)
-        reply = self._nam.get(req)
-
-        def _finished():
-            try:
-                if reply.error() != QNetworkReply.NoError:
-                    self.resetToPlaceholder()
-                    reply.deleteLater()
-                    return
-                data = reply.readAll()
-                pm = QPixmap()
-                if not pm.loadFromData(bytes(data)):
-                    self.resetToPlaceholder()
-                    reply.deleteLater()
-                    return
-                fd, temp_path = tempfile.mkstemp(prefix="dimcreator_img_", suffix=".jpg")
-                os.close(fd)
-                img = pm.toImage()
-                img.save(temp_path)
-                self._set_owned_temp_path(temp_path)
-            finally:
-                reply.deleteLater()
-
-        reply.finished.connect(_finished)
+        self._load_seq += 1
+        self._download_first_valid([url], self._load_seq)
 
     def _adopt_data_url(self, url: QUrl) -> bool:
         try:
             s = url.toString()
             if not s.startswith('data:image/'):
+                return False
+            if len(s) > (self.MAX_IMAGE_BYTES * 4 // 3) + 4096:
                 return False
 
             header, data = s.split(',', 1)
@@ -469,22 +517,19 @@ class ImageLabel(QLabel):
                 pad = len(b) % 4
                 if pad:
                     b += '=' * (4 - pad)
-                raw = base64.b64decode(b, validate=False)
+                raw = base64.b64decode(b, validate=True)
             else:
                 raw = QUrl.fromPercentEncoding(data.encode('utf-8'))
                 if not isinstance(raw, (bytes, bytearray)):
                     raw = bytes(raw)
 
-            pm = QPixmap()
-            if not pm.loadFromData(raw):
+            image = self._read_image_bytes(bytes(raw))
+            if image.isNull():
                 return False
-
-            fd, temp_path = tempfile.mkstemp(prefix="dimcreator_img_", suffix=ext or '.png')
-            os.close(fd)
-            pm.toImage().save(temp_path)
-            self._set_owned_temp_path(temp_path)
+            self._abort_active_download()
+            self._show_image(image, self._persist_image(image))
             return True
-        except Exception:
+        except (OSError, ValueError, TypeError, base64.binascii.Error):
             return False
 
 
@@ -507,7 +552,12 @@ class NameEntryDialog(MessageBoxBase):
         self.nameLineEdit.textChanged.connect(self._validateName)
 
     def _validateName(self, text):
-        self.yesButton.setEnabled(bool(text.strip()))
+        try:
+            validate_windows_name(text)
+            valid = True
+        except ValueError:
+            valid = False
+        self.yesButton.setEnabled(valid)
 
     def getName(self):
         return self.nameLineEdit.text().strip()
@@ -552,17 +602,22 @@ class CustomTreeView(TreeView):
             event.ignore()
             return
 
-        destinationIndex = self.indexAt(event.pos())
-        
         file_explorer = self.parent()
+        if not file_explorer._mutation_allowed():
+            event.ignore()
+            return
+
+        destinationIndex = self.indexAt(event.pos())
         main_gui = getattr(file_explorer, "main_gui", None)
         if main_gui is not None and hasattr(main_gui, 'current_build') and main_gui.current_build:
             build_content_dir = get_build_content_dir(main_gui.current_build.folder)
             
             if hasattr(file_explorer, 'current_path'):
-                expected_build_folder = os.path.dirname(build_content_dir)
-                if os.path.normcase(os.path.normpath(file_explorer.current_path)) != os.path.normcase(os.path.normpath(expected_build_folder)):
-                    log.warning(f"FileExplorer path mismatch: displaying {file_explorer.current_path} but current build is {expected_build_folder}")
+                if canonical_path(file_explorer.current_path) != canonical_path(build_content_dir):
+                    log.warning(f"FileExplorer path mismatch: displaying {file_explorer.current_path} but current build is {build_content_dir}")
+                    file_explorer.InvalidFolderInfoBar()
+                    event.ignore()
+                    return
         else:
             log.warning("No current build available for drag & drop")
             event.ignore()
@@ -574,15 +629,7 @@ class CustomTreeView(TreeView):
             else build_content_dir
         )
 
-        try:
-            base_abs = os.path.abspath(build_content_dir)
-            dest_abs = os.path.abspath(destinationPath)
-            base_nc = os.path.normcase(os.path.normpath(base_abs))
-            dest_nc = os.path.normcase(os.path.normpath(dest_abs))
-            is_inside = os.path.commonpath([dest_nc, base_nc]) == base_nc
-        except (ValueError, OSError, TypeError) as e:
-            log.error(f"Path validation error in drag-and-drop: {e}")
-            is_inside = False
+        is_inside = is_path_within(destinationPath, build_content_dir)
 
         if not is_inside:
             print(f"Attempt to drop outside build directory: {destinationPath} to {build_content_dir}")
@@ -621,172 +668,33 @@ class CustomTreeView(TreeView):
             QTimer.singleShot(0, self.parent().refresh_view)
 
     def copyPath(self, sourcePath, destinationPath):
-        if not os.path.isdir(destinationPath):
-            destinationPath = os.path.dirname(destinationPath)
-
-        if not os.path.isdir(destinationPath):
-            print(f"Invalid destination path for copy: {destinationPath}")
-            log.error(f"Invalid destination path for copy: {destinationPath}")
-            return
-
-        basename = os.path.basename(sourcePath.rstrip(os.sep))
-        target = os.path.join(destinationPath, basename)
-
-        try:
-            src_abs = os.path.abspath(sourcePath)
-            tgt_abs = os.path.abspath(target)
-            if os.path.isdir(src_abs):
-                common = os.path.commonpath([src_abs, tgt_abs])
-                if common == src_abs:
-                    print(f"Copy blocked: {src_abs} -> {tgt_abs} (self/subfolder).")
-                    log.warning(f"Copy blocked: {src_abs} -> {tgt_abs} (self/subfolder).")
-                    return
-            try:
-                if os.path.exists(tgt_abs) and os.path.samefile(src_abs, tgt_abs):
-                    print("Copy skipped: source and target are the same.")
-                    log.info("Copy skipped: same source and target.")
-                    return
-            except Exception:
-                pass
-        except Exception:
-            pass
-
-        if os.path.exists(target):
-            if not self.overwrite_all:
-                reply = QMessageBox.question(
-                    self.parent(),
-                    "Item exists",
-                    f"'{basename}' already exists. Overwrite (replace)?",
-                    QMessageBox.StandardButton.Yes
-                    | QMessageBox.StandardButton.No
-                    | QMessageBox.StandardButton.YesToAll,
-                    QMessageBox.StandardButton.No
-                )
-            else:
-                reply = QMessageBox.StandardButton.Yes
-
-            if reply == QMessageBox.StandardButton.No:
-                print("Copy canceled by user.")
-                log.info("Copy canceled by user (overwrite denied).")
-                return
-            if reply == QMessageBox.StandardButton.YesToAll:
-                self.overwrite_all = True
-
-            try:
-                if os.path.isdir(target) and not os.path.islink(target):
-                    shutil.rmtree(target)
-                else:
-                    os.remove(target)
-            except Exception as e:
-                log.error(f"Failed to remove existing target '{target}': {e}")
-                return
-
-        try:
-            if os.path.isdir(sourcePath):
-                shutil.copytree(sourcePath, target)
-            else:
-                os.makedirs(os.path.dirname(target), exist_ok=True)
-                shutil.copy2(sourcePath, target)
-            print(f"Item copied: {sourcePath} -> {target}")
-            log.info(f"Item copied: {sourcePath} -> {target}")
-        except Exception as e:
-            print(f"Error copying {sourcePath} to {target}: {e}")
-            log.error(f"Error copying {sourcePath} to {target}: {e}")
-            self.parent().InvalidFolderInfoBar()
+        return self.parent()._transfer_path(
+            sourcePath, destinationPath, move=False,
+            overwrite_all=self.overwrite_all,
+            update_overwrite=lambda: setattr(self, "overwrite_all", True),
+        )
 
     def movePath(self, sourcePath, destinationPath):
-        if not os.path.isdir(destinationPath):
-            destinationPath = os.path.dirname(destinationPath)
-
-        if not os.path.isdir(destinationPath):
-            print(f"Invalid destination path for move: {destinationPath}")
-            log.error(f"Invalid destination path for move: {destinationPath}")
-            return
-
-        basename = os.path.basename(sourcePath.rstrip(os.sep))
-        target = os.path.join(destinationPath, basename)
-
-        try:
-            src_abs = os.path.abspath(sourcePath)
-            tgt_abs = os.path.abspath(target)
-            if os.path.isdir(src_abs):
-                common = os.path.commonpath([src_abs, tgt_abs])
-                if common == src_abs:
-                    print(f"Move blocked: {src_abs} -> {tgt_abs} (self/subfolder).")
-                    log.warning(f"Move blocked: {src_abs} -> {tgt_abs} (self/subfolder).")
-                    return
-            try:
-                if (os.path.exists(tgt_abs) and
-                        os.path.samefile(src_abs, tgt_abs)):
-                    print("Move skipped: source and target are the same.")
-                    log.info("Move skipped: same source and target.")
-                    return
-            except Exception:
-                pass
-        except Exception:
-            pass
-
-        if os.path.exists(target):
-            if not self.overwrite_all:
-                reply = QMessageBox.question(
-                    self.parent(),
-                    "Item exists",
-                    f"'{basename}' already exists. Overwrite (replace)?",
-                    QMessageBox.StandardButton.Yes
-                    | QMessageBox.StandardButton.No
-                    | QMessageBox.StandardButton.YesToAll,
-                    QMessageBox.StandardButton.No
-                )
-            else:
-                reply = QMessageBox.StandardButton.Yes
-
-            if reply == QMessageBox.StandardButton.No:
-                print("Move canceled by user.")
-                log.info("Move canceled by user (overwrite denied).")
-                return
-            if reply == QMessageBox.StandardButton.YesToAll:
-                self.overwrite_all = True
-
-            try:
-                if os.path.isdir(target) and not os.path.islink(target):
-                    shutil.rmtree(target)
-                else:
-                    os.remove(target)
-            except Exception as e:
-                log.error(f"Failed to remove existing target '{target}': {e}")
-                return
-
-        try:
-            os.makedirs(os.path.dirname(target), exist_ok=True)
-            shutil.move(sourcePath, target)
-            print(f"Item moved: {sourcePath} -> {target}")
-            log.info(f"Item moved: {sourcePath} -> {target}")
-        except Exception as e:
-            print(f"Error moving {sourcePath} to {target}: {e}")
-            log.error(f"Error moving {sourcePath} to {target}: {e}")
-            self.parent().InvalidFolderInfoBar()
+        return self.parent()._transfer_path(
+            sourcePath, destinationPath, move=True,
+            overwrite_all=self.overwrite_all,
+            update_overwrite=lambda: setattr(self, "overwrite_all", True),
+        )
 
 
 class FileExplorer(QWidget):
-    def __init__(self, path=os.path.expanduser("~"), parent=None, main_gui=None):
+    def __init__(self, path=None, parent=None, main_gui=None):
         super().__init__(parent)
         self.main_gui = main_gui
 
         self.clipboard = None
         self.isCutOperation = False
-        
-        if not path:
-            self.current_path = os.path.expanduser("~")
-        elif path.endswith("Content"):
-            self.current_path = os.path.dirname(path)
-        else:
-            self.current_path = path
 
-        if not os.path.exists(self.current_path):
-            self.current_path = os.path.expanduser("~")
+        self.current_path = os.path.abspath(path) if path else ""
+        self._root_valid = self._root_is_safe(self.current_path)
 
         self.model = QFileSystemModel()
-        self.model.setRootPath('')
+        self.model.setRootPath(self.current_path if self._root_valid else "")
         self.treeView = CustomTreeView(self)
         self.treeView.setModel(self.model)
         self.treeView.setExpandsOnDoubleClick(False)
@@ -800,6 +708,7 @@ class FileExplorer(QWidget):
 
         specificIndex = self.model.index(self.current_path)
         self.treeView.setRootIndex(specificIndex)
+        self.treeView.setVisible(self._root_valid)
 
         self.treeView.setColumnWidth(0, 360)
         self.treeView.setColumnWidth(1, 100)
@@ -812,14 +721,13 @@ class FileExplorer(QWidget):
         layout.addWidget(self.treeView)
         self.setLayout(layout)
         
-        if path.endswith("Content") and os.path.exists(path):
-            QTimer.singleShot(100, lambda: self._expandFolders(self.current_path, path))
-
         self.setupShortcuts()
 
     def on_double_click(self, index):
         try:
-            path = self.model.filePath(index)
+            path = self._checked_path(
+                self.model.filePath(index), allow_root=True
+            )
             if os.path.isdir(path):
                 if self.treeView.isExpanded(index):
                     self.treeView.collapse(index)
@@ -856,6 +764,179 @@ class FileExplorer(QWidget):
             parent=self
         )
         w.show()
+
+    def _mutation_allowed(self) -> bool:
+        checker = getattr(self.main_gui, "canMutateWorkspace", None)
+        if checker and not checker():
+            show_info(self, "Busy", "Please wait for the current operation to finish.")
+            return False
+        root_checker = getattr(self, "_root_is_safe", None)
+        if callable(root_checker) and not root_checker(self.current_path):
+            self._root_valid = False
+        if not getattr(self, "_root_valid", True):
+            show_warning(self, "Invalid Content Folder", "The Content folder is unavailable.")
+            return False
+        current_build = getattr(self.main_gui, "current_build", None)
+        if current_build is not None:
+            expected_root = get_build_content_dir(current_build.folder)
+            if canonical_path(self.current_path) != canonical_path(expected_root):
+                log.warning(
+                    "Blocked mutation for stale FileExplorer root: %s (expected %s)",
+                    self.current_path, expected_root,
+                )
+                self.InvalidFolderInfoBar()
+                return False
+        return self.isEnabled()
+
+    def _root_is_safe(self, path: str) -> bool:
+        if not path or not os.path.isdir(path):
+            return False
+        candidate = os.path.abspath(path)
+        current_build = getattr(self.main_gui, "current_build", None)
+        if current_build is None:
+            return False
+        try:
+            expected = os.path.abspath(
+                get_build_content_dir(current_build.folder)
+            )
+        except (AttributeError, OSError, ValueError):
+            return False
+        if canonical_path(candidate) != canonical_path(expected):
+            return False
+        builds_root = os.path.dirname(os.path.dirname(expected))
+        return (
+            is_path_within(candidate, builds_root, allow_root=False)
+            and not has_reparse_component(candidate, builds_root)
+        )
+
+    def _checked_path(self, path: str, *, allow_root=False,
+                      must_exist=True) -> str:
+        candidate = os.path.abspath(path)
+        if not is_path_within(candidate, self.current_path, allow_root=allow_root):
+            raise ValueError("Path is outside the current Content folder")
+        if must_exist and not os.path.exists(candidate):
+            raise ValueError("Path does not exist")
+        if has_reparse_component(candidate, self.current_path):
+            raise ValueError("Links and reparse points cannot be modified")
+        return candidate
+
+    @staticmethod
+    def _remove_permanently(path: str):
+        if os.path.isdir(path) and not os.path.islink(path):
+            shutil.rmtree(path)
+        else:
+            os.remove(path)
+
+    @staticmethod
+    def _validate_copy_source(path: str):
+        if has_reparse_point(path):
+            raise ValueError("Links and reparse points cannot be copied")
+        if os.path.isdir(path):
+            for root, dirs, files in os.walk(path):
+                for name in dirs + files:
+                    if has_reparse_point(os.path.join(root, name)):
+                        raise ValueError(
+                            "Folders containing links or reparse points cannot be copied"
+                        )
+
+    def _transfer_path(self, source_path: str, destination_path: str, *,
+                       move: bool, overwrite_all=False, update_overwrite=None):
+        if not self._mutation_allowed():
+            return False
+        try:
+            source = os.path.abspath(source_path)
+            if not os.path.exists(source):
+                raise ValueError("Source no longer exists")
+            self._validate_copy_source(source)
+            if move:
+                source = self._checked_path(source, allow_root=False)
+
+            destination = destination_path
+            if not os.path.isdir(destination):
+                destination = os.path.dirname(destination)
+            destination = self._checked_path(destination, allow_root=True)
+            basename = validate_windows_name(os.path.basename(source.rstrip(os.sep)))
+            target = safe_child_path(self.current_path, destination, basename)
+
+            if canonical_path(source) == canonical_path(target):
+                return False
+            if os.path.isdir(source) and is_path_within(
+                    target, source, allow_root=False):
+                raise ValueError("A folder cannot be copied into itself")
+
+            if os.path.exists(target) and not overwrite_all:
+                reply = QMessageBox.question(
+                    self, "Item exists",
+                    f"'{basename}' already exists. Replace it?",
+                    QMessageBox.StandardButton.Yes
+                    | QMessageBox.StandardButton.No
+                    | QMessageBox.StandardButton.YesToAll,
+                    QMessageBox.StandardButton.No,
+                )
+                if reply == QMessageBox.StandardButton.No:
+                    return False
+                if (reply == QMessageBox.StandardButton.YesToAll
+                        and update_overwrite is not None):
+                    update_overwrite()
+
+            token = uuid.uuid4().hex
+            transaction_dir = tempfile.mkdtemp(
+                prefix=".dimcreator-fileop-",
+                dir=os.path.dirname(self.current_path),
+            )
+            stage = os.path.join(transaction_dir, f"{token}.stage")
+            backup = os.path.join(transaction_dir, f"{token}.backup")
+            try:
+                if os.path.isdir(source):
+                    shutil.copytree(source, stage)
+                else:
+                    shutil.copy2(source, stage)
+
+                had_target = os.path.exists(target)
+                if had_target:
+                    os.replace(target, backup)
+                try:
+                    os.replace(stage, target)
+                except Exception:
+                    if had_target and os.path.exists(backup):
+                        os.replace(backup, target)
+                    raise
+
+                if os.path.exists(backup):
+                    try:
+                        self._remove_permanently(backup)
+                    except OSError as exc:
+                        log.warning(
+                            "Could not remove file-operation backup '%s': %s",
+                            backup, exc,
+                        )
+                if move:
+                    try:
+                        self._remove_permanently(source)
+                    except OSError as exc:
+                        show_warning(
+                            self, "Move Incomplete",
+                            "The copy succeeded, but the original could not be removed: "
+                            f"{exc}", Qt.Vertical,
+                        )
+                        return False
+                log.info("%s '%s' to '%s'", "Moved" if move else "Copied",
+                         source, target)
+                return True
+            finally:
+                if os.path.exists(stage):
+                    self._remove_permanently(stage)
+                try:
+                    os.rmdir(transaction_dir)
+                except OSError as exc:
+                    log.warning(
+                        "Could not remove file-operation transaction directory '%s': %s",
+                        transaction_dir, exc,
+                    )
+        except (OSError, ValueError) as exc:
+            log.warning("Blocked file operation: %s", exc)
+            show_error(self, "File Operation Failed", str(exc))
+            return False
 
     def setupShortcuts(self):
         QShortcut(QKeySequence("Ctrl+E"), self, self.openInExplorer)
@@ -921,23 +1002,28 @@ class FileExplorer(QWidget):
     def openInExplorer(self):
         selected_index = self.treeView.currentIndex()
         if selected_index.isValid():
-            path = self.model.filePath(selected_index)
-            if os.path.exists(path):
-                try:
+            try:
+                path = self._checked_path(
+                    self.model.filePath(selected_index), allow_root=True
+                )
+                if os.path.exists(path):
                     if os.path.isfile(path):
                         QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(path)))
                     else:
                         QDesktopServices.openUrl(QUrl.fromLocalFile(path))
-                except Exception as e:
-                    print(f"Error opening the path in explorer: {e}")
-                    log.error(f"Error opening the path in explorer: {e}")
-            else:
-                print("Error: The selected path does not exist.")
-                log.warning("Error: The selected path does not exist.")
+                else:
+                    raise ValueError("The selected path does not exist")
+            except (OSError, ValueError) as exc:
+                log.warning("Blocked opening an unsafe explorer path: %s", exc)
+                show_warning(self, "Open Blocked", str(exc))
 
     def refresh_view(self):
         if hasattr(self, 'current_path') and self.current_path:
-            self.model.setRootPath('')
+            if not self._root_is_safe(self.current_path):
+                self._root_valid = False
+                self.treeView.hide()
+                return
+            self.model.setRootPath(self.current_path)
             specificIndex = self.model.index(self.current_path)
             self.treeView.setRootIndex(specificIndex)
             if specificIndex.isValid():
@@ -947,6 +1033,9 @@ class FileExplorer(QWidget):
     
     def _updateBuildStatus(self):
         if not self.main_gui:
+            return
+        checker = getattr(self.main_gui, "canMutateWorkspace", None)
+        if checker and not checker():
             return
         
         if not hasattr(self.main_gui, 'current_build') or not self.main_gui.current_build:
@@ -976,37 +1065,36 @@ class FileExplorer(QWidget):
             log.error(f"Error updating build status: {e}")
 
     def copySelected(self):
+        if not self._mutation_allowed():
+            return
         selected_index = self.treeView.currentIndex()
         if selected_index.isValid():
-            source_path = self.model.filePath(selected_index)
-            if os.path.exists(source_path):
+            try:
+                source_path = self._checked_path(
+                    self.model.filePath(selected_index), allow_root=False
+                )
                 self.clipboard = source_path
                 self.isCutOperation = False
-                print(f"Item copied: {self.clipboard}")
-                log.info(f"Item copied: {self.clipboard}")
-            else:
-                print("Error: The selected item does not exist.")
-                log.error(f"Error: The selected item does not exist. - {source_path}")
+            except ValueError as exc:
+                show_warning(self, "Copy Blocked", str(exc))
 
     def cutSelected(self):
+        if not self._mutation_allowed():
+            return
         selected_index = self.treeView.currentIndex()
         if selected_index.isValid():
-            source_path = self.model.filePath(selected_index)
-            if os.path.exists(source_path):
+            try:
+                source_path = self._checked_path(
+                    self.model.filePath(selected_index), allow_root=False
+                )
                 self.clipboard = source_path
                 self.isCutOperation = True
-                print(f"Item cut: {self.clipboard}")
-                log.info(f"Item cut: {self.clipboard}")
-            else:
-                print("Error: The selected item does not exist.")
-                log.error(f"Error: The selected item does not exist. - {source_path}")
+            except ValueError as exc:
+                show_warning(self, "Cut Blocked", str(exc))
 
     def pasteIntoFolder(self):
         if not (self.clipboard and os.path.exists(self.clipboard)):
-            print("Nothing to paste or source no longer exists.")
-            log.warning("Paste aborted: empty clipboard or missing source.")
             return
-
         destination_index = self.treeView.currentIndex()
         if destination_index.isValid():
             selected_path = self.model.filePath(destination_index)
@@ -1015,155 +1103,83 @@ class FileExplorer(QWidget):
                 else os.path.dirname(selected_path)
             )
         else:
-            destination_path = self.model.rootPath()
+            destination_path = self.current_path
 
-        if not os.path.isdir(destination_path):
-            print("Invalid destination path for paste operation.")
-            log.error(f"Invalid destination path for paste operation: {destination_path}")
-            return
-
-        basename = os.path.basename(self.clipboard.rstrip(os.sep))
-        target = os.path.join(destination_path, basename)
-
-        try:
-            src_abs = os.path.abspath(self.clipboard)
-            tgt_abs = os.path.abspath(target)
-            if os.path.isdir(src_abs):
-                common = os.path.commonpath([src_abs, tgt_abs])
-                if common == src_abs:
-                    show_warning(
-                        self, "Invalid Operation",
-                        "Cannot paste a folder into itself or its subfolder.",
-                        Qt.Vertical
-                    )
-                    log.warning(f"Paste blocked: {src_abs} -> {tgt_abs} (self/subfolder).")
-                    return
-            if os.path.samefile(self.clipboard, target):
-                show_info(
-                    self, "Operation Skipped",
-                    "Source and destination are the same."
-                )
-                log.info(
-                    f"Paste skipped: same source and destination: {src_abs}"
-                )
-                return
-        except Exception:
-            pass
-
-        if os.path.exists(target):
-            reply = QMessageBox.question(
-                self,
-                "File exists",
-                f"The item '{basename}' already exists in the destination. Overwrite?",
-                QMessageBox.StandardButton.Yes |
-                QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No
-            )
-            if reply == QMessageBox.StandardButton.No:
-                print("Operation canceled by the user.")
-                log.info("Paste canceled by user (overwrite denied).")
-                show_info(
-                    self, "Operation Canceled",
-                    f"Item <strong>{basename}</strong> not moved/copied."
-                )
-                return
-
-            try:
-                if os.path.isdir(target) and not os.path.islink(target):
-                    shutil.rmtree(target)
-                else:
-                    os.remove(target)
-            except Exception as e:
-                log.error(f"Failed to remove existing target '{target}': {e}")
-                show_error(
-                    self, "Overwrite Failed",
-                    f"Could not remove existing target.<br><small>{e}</small>"
-                )
-                return
-
-        try:
-            if self.isCutOperation:
-                shutil.move(self.clipboard, target)
-                print(f"Item moved: {self.clipboard} -> {destination_path}")
-                log.info(f"Item moved: {self.clipboard} -> {destination_path}")
-                show_info(
-                    self, "Moving Successful",
-                    f"Item <strong>{basename}</strong> successfully moved."
-                )
-            else:
-                if os.path.isdir(self.clipboard):
-                    shutil.copytree(self.clipboard, target)
-                else:
-                    os.makedirs(os.path.dirname(target), exist_ok=True)
-                    shutil.copy2(self.clipboard, target)
-                print(f"Item copied: {self.clipboard} -> {destination_path}")
-                log.info(f"Item copied: {self.clipboard} -> {destination_path}")
-                show_info(
-                    self, "Copying Successful",
-                    f"Item <strong>{basename}</strong> successfully copied."
-                )
-        except Exception as e:
-            print(f"Error during paste operation: {e}")
-            log.error(f"Error during paste operation: {e}")
-            show_error(
-                self, "Paste Failed",
-                f"Error during paste operation.<br><small>{e}</small>"
-            )
-        finally:
+        succeeded = self._transfer_path(
+            self.clipboard, destination_path, move=self.isCutOperation
+        )
+        if succeeded:
             self.clipboard = None
             self.isCutOperation = False
             QTimer.singleShot(0, self.refresh_view)
 
     def deleteSelected(self):
+        if not self._mutation_allowed():
+            return
         selected_index = self.treeView.currentIndex()
         if selected_index.isValid():
-            target = self.model.filePath(selected_index)
             try:
-                if os.path.isdir(target):
-                    shutil.rmtree(target)
-                    QTimer.singleShot(0, self.refresh_view)
-                elif os.path.isfile(target):
-                    os.remove(target)
-                    QTimer.singleShot(0, self.refresh_view)
-                print(f"Item deleted: {target}")
-                log.info(f"Item deleted: {target}")
-                show_info(self, "Deletion Successful", "Item successfully deleted.")
-            except OSError as e:
-                print(f"Failed to delete the selected item. Error encountered: {e}")
-                log.error(f"Failed to delete the selected item. Error encountered: {e}")
-                show_error(
-                    self, 'Deletion Failed',
-                    "Failed to delete the selected item. Please try again or "
-                    "check for file permissions."
+                target = self._checked_path(
+                    self.model.filePath(selected_index), allow_root=False
                 )
+                reply = QMessageBox.question(
+                    self, "Move to Recycle Bin?",
+                    f"Move '{os.path.basename(target)}' to the Recycle Bin?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+                if not move_to_trash(target):
+                    permanent = QMessageBox.warning(
+                        self, "Recycle Bin Unavailable",
+                        "The item could not be moved to the Recycle Bin. Delete it "
+                        "permanently? This cannot be undone.",
+                        QMessageBox.StandardButton.Yes
+                        | QMessageBox.StandardButton.Cancel,
+                        QMessageBox.StandardButton.Cancel,
+                    )
+                    if permanent != QMessageBox.StandardButton.Yes:
+                        return
+                    self._remove_permanently(target)
+                QTimer.singleShot(0, self.refresh_view)
+                show_info(self, "Deletion Successful", "Item successfully deleted.")
+            except (OSError, ValueError) as exc:
+                log.warning("Deletion blocked or failed: %s", exc)
+                show_error(self, "Deletion Failed", str(exc))
 
     def renameSelected(self):
+        if not self._mutation_allowed():
+            return
         selected_index = self.treeView.currentIndex()
         if selected_index.isValid():
-            current_path = self.model.filePath(selected_index)
-            base_path = os.path.dirname(current_path)
-            current_name = os.path.basename(current_path)
+            try:
+                current_path = self._checked_path(
+                    self.model.filePath(selected_index), allow_root=False
+                )
+                base_path = os.path.dirname(current_path)
+                current_name = os.path.basename(current_path)
+            except ValueError as exc:
+                show_warning(self, "Rename Blocked", str(exc))
+                return
 
             dialog = NameEntryDialog(
                 self, title="Rename", placeholder="Enter new name"
             )
             dialog.nameLineEdit.setText(current_name)
             if dialog.exec():
-                new_name = dialog.getName()
-                new_path = os.path.join(base_path, new_name)
-                if os.path.exists(new_path):
-                    print("Error: A file or folder with the new name already exists.")
-                    log.error(
-                        f"Error: Failed to rename item <strong>{current_name}"
-                        f"</strong> into <strong>{new_name}</strong>. A file or "
-                        f"folder with the <strong>{new_name}</strong> already "
-                        "exists."
+                try:
+                    new_name = validate_windows_name(dialog.getName())
+                    new_path = safe_child_path(
+                        self.current_path, base_path, new_name
                     )
+                except ValueError as exc:
+                    show_warning(self, "Renaming Failed", str(exc))
+                    return
+                if os.path.exists(new_path):
                     show_warning(
                         self, "Renaming Failed",
-                        f"Failed to rename item <strong>{current_name}</strong> "
-                        f"into <strong>{new_name}</strong>. A file or folder with "
-                        f"the <strong>{new_name}</strong> already exists.",
+                        f"An item named <strong>{new_name}</strong> already exists.",
                         Qt.Vertical
                     )
                     return
@@ -1171,17 +1187,14 @@ class FileExplorer(QWidget):
                     os.rename(current_path, new_path)
                     QTimer.singleShot(0, self.refresh_view)
                 except OSError as e:
-                    print(f"Error renaming file {current_path} to {new_path}: {e}")
                     log.error(f"Error renaming file {current_path} to {new_path}: {e}")
+                    show_error(self, "Renaming Failed", str(e))
 
     def createNewFile(self):
+        if not self._mutation_allowed():
+            return
         dialog = NameEntryDialog(self, title="New File", placeholder="Enter file name")
         if dialog.exec():
-            file_name = dialog.getName()
-            if not file_name.strip():
-                show_warning(self, "Warning", "File name cannot be empty.")
-                return
-
             destination_index = self.treeView.currentIndex()
             destination_path = (
                 self.model.filePath(destination_index)
@@ -1190,41 +1203,37 @@ class FileExplorer(QWidget):
             )
             if not os.path.isdir(destination_path):
                 destination_path = os.path.dirname(destination_path)
-            new_file_path = os.path.join(
-                destination_path, file_name if file_name else "New File.txt"
-            )
+            try:
+                file_name = validate_windows_name(dialog.getName())
+                destination_path = self._checked_path(
+                    destination_path, allow_root=True
+                )
+                new_file_path = safe_child_path(
+                    self.current_path, destination_path, file_name
+                )
+            except ValueError as exc:
+                show_warning(self, "File Creation Failed", str(exc))
+                return
 
             if os.path.exists(new_file_path):
-                overwrite_reply = QMessageBox.question(
-                    self,
-                    "File Exists",
-                    f"{file_name} already exists. Do you want to overwrite it?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No
-                )
-                if overwrite_reply == QMessageBox.StandardButton.No:
-                    return
+                show_warning(self, "File Exists", f"{file_name} already exists.")
+                return
 
             try:
-                with open(new_file_path, 'w') as file:
-                    file.close()
+                with open(new_file_path, 'x', encoding='utf-8'):
+                    pass
                 QTimer.singleShot(0, self.refresh_view)
                 show_info(self, "File Created", f"New file created: {file_name}")
-                print(f"New file created: {new_file_path}")
                 log.info(f"New file created: {new_file_path}")
             except IOError as e:
                 show_error(self, "Error", f"Error creating file {file_name}: {e}")
-                print(f"Error creating file {new_file_path}: {e}")
                 log.error(f"Error creating file {new_file_path}: {e}")
 
     def createNewFolder(self):
+        if not self._mutation_allowed():
+            return
         dialog = NameEntryDialog(self, title="New Folder", placeholder="Enter folder name")
         if dialog.exec():
-            folder_name = dialog.getName()
-            if not folder_name.strip():
-                show_warning(self, "Warning", "Folder name cannot be empty.")
-                return
-
             destination_index = self.treeView.currentIndex()
             destination_path = (
                 self.model.filePath(destination_index)
@@ -1233,47 +1242,49 @@ class FileExplorer(QWidget):
             )
             if not os.path.isdir(destination_path):
                 destination_path = os.path.dirname(destination_path)
-            new_folder_path = os.path.join(
-                destination_path, folder_name if folder_name else "New Folder"
-            )
+            try:
+                folder_name = validate_windows_name(dialog.getName())
+                destination_path = self._checked_path(
+                    destination_path, allow_root=True
+                )
+                new_folder_path = safe_child_path(
+                    self.current_path, destination_path, folder_name
+                )
+            except ValueError as exc:
+                show_warning(self, "Folder Creation Failed", str(exc))
+                return
 
             if os.path.exists(new_folder_path):
                 show_warning(self, "Folder Exists", f"The folder {folder_name} already exists.")
                 return
 
             try:
-                os.makedirs(new_folder_path, exist_ok=True)
+                os.mkdir(new_folder_path)
                 QTimer.singleShot(0, self.refresh_view)
                 show_info(self, "Folder Created", f"New folder created: {folder_name}")
-                print(f"New folder created: {new_folder_path}")
                 log.info(f"New folder created: {new_folder_path}")
             except OSError as e:
                 show_error(self, "Error", f"Error creating folder {folder_name}.")
-                print(f"Error creating folder {new_folder_path}: {e}")
     
     def setRootPath(self, path: str):
-        if os.path.exists(path):
-            self.model.setRootPath('')
-            
-            parent_path = os.path.dirname(path)
-            if parent_path and os.path.exists(parent_path):
-                self.current_path = parent_path
-                specificIndex = self.model.index(parent_path)
-                self.treeView.setRootIndex(specificIndex)
-                
-                if specificIndex.isValid():
-                    if self.model.canFetchMore(specificIndex):
-                        self.model.fetchMore(specificIndex)
-                    
-                    QTimer.singleShot(50, lambda: self._expandFolders(parent_path, path))
-            else:
-                self.current_path = path
-                specificIndex = self.model.index(path)
-                self.treeView.setRootIndex(specificIndex)
-                if specificIndex.isValid():
-                    if self.model.canFetchMore(specificIndex):
-                        self.model.fetchMore(specificIndex)
-                    QTimer.singleShot(50, lambda: self.treeView.expand(specificIndex))
+        if not self._root_is_safe(path):
+            self.current_path = os.path.abspath(path) if path else ""
+            self._root_valid = False
+            self.clipboard = None
+            self.isCutOperation = False
+            self.treeView.hide()
+            return False
+        self._root_valid = True
+        self.current_path = os.path.abspath(path)
+        self.clipboard = None
+        self.isCutOperation = False
+        self.model.setRootPath(self.current_path)
+        specific_index = self.model.index(self.current_path)
+        self.treeView.setRootIndex(specific_index)
+        self.treeView.show()
+        if specific_index.isValid() and self.model.canFetchMore(specific_index):
+            self.model.fetchMore(specific_index)
+        return True
     
     def _expandFolders(self, parent_path: str, content_path: str):
         parent_index = self.model.index(parent_path)
@@ -1291,7 +1302,7 @@ class FileExplorer(QWidget):
         
         old_model = self.model
         self.model = QFileSystemModel()
-        self.model.setRootPath('')
+        self.model.setRootPath(current_path)
         self.treeView.setModel(self.model)
         
         if old_model:
@@ -1321,6 +1332,11 @@ class BuildListWidget(QWidget):
         self._refreshing = False
         
         self.initUI()
+
+    def _can_mutate(self) -> bool:
+        main_gui = self.parent()
+        checker = getattr(main_gui, "canMutateWorkspace", None)
+        return self.isEnabled() and (not checker or checker())
     
     def initUI(self):
         layout = QVBoxLayout(self)
@@ -1518,12 +1534,18 @@ class BuildListWidget(QWidget):
                 break
     
     def onItemClicked(self, item):
+        if not self._can_mutate():
+            self.refreshList()
+            return
         build_id = item.data(Qt.ItemDataRole.UserRole)
         self.selected_build_id = build_id
         self.buildSelected.emit(build_id)
     
     def _onCheckboxStateChanged(self, state):
         if self._refreshing:
+            return
+        if not self._can_mutate():
+            self.refreshList()
             return
 
         if not self.session:
@@ -1545,6 +1567,9 @@ class BuildListWidget(QWidget):
     
     def onRowsMoved(self, parent, start, end, destination, row):
         if not self.session or self._refreshing:
+            return
+        if not self._can_mutate():
+            self.refreshList()
             return
         
         log.info(f"Drag-drop reorder detected: moved row {start} to position {row}")
@@ -1621,12 +1646,14 @@ class BuildListWidget(QWidget):
                     checkbox.blockSignals(False)
     
     def onAddBuild(self):
-        if not self.session:
+        if not self.session or not self._can_mutate():
             return
         
         self.buildAdded.emit()
     
     def onNewSession(self):
+        if not self._can_mutate():
+            return
         main_gui = self.parent()
         if main_gui and hasattr(main_gui, 'onNewSession'):
             main_gui.onNewSession()
@@ -1654,7 +1681,7 @@ class BuildListWidget(QWidget):
                 self.onDeleteBuild(build_id)
     
     def onCleanContent(self, build_id: str):
-        if not self.session:
+        if not self.session or not self._can_mutate():
             return
         
         build = None
@@ -1691,7 +1718,7 @@ class BuildListWidget(QWidget):
                 show_error(self.parent(), "Error", f"Failed to clean content: {e}")
     
     def onDeleteBuild(self, build_id: str):
-        if not self.session:
+        if not self.session or not self._can_mutate():
             return
         
         build = None

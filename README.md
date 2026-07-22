@@ -2,7 +2,7 @@
 
 *A Windows desktop app for building DAZ Install Manager (DIM) packages.*
 
-![Python](https://img.shields.io/badge/Python-3.9%2B-blue)
+![Python](https://img.shields.io/badge/Python-3.11--3.14-blue)
 ![PySide6](https://img.shields.io/badge/GUI-PySide6-brightgreen)
 ![OS](https://img.shields.io/badge/OS-Windows-lightgrey)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-orange.svg)](LICENSE)
@@ -24,8 +24,8 @@ DIM-Creator prepares DAZ Studio content for DAZ Install Manager. It stages your 
 
 ## Requirements
 
-- Windows
-- Python 3.9+ when running from source
+- Windows 10 or 11 (x64)
+- Python 3.11–3.14 when running from source
 - 7-Zip or UnRAR in `PATH` for `.rar` and `.7z` extraction
 
 Plain `.zip` archives work without an external extractor. For `.rar` and `.7z`, install [7-Zip](https://www.7-zip.org/) or UnRAR and make sure the executable is available from your terminal.
@@ -71,6 +71,7 @@ Use **Extract Archive** for `.zip`, `.rar`, or `.7z` files. The extraction dialo
 - **Session backups:** `Documents/DIMCreator/Sessions/backups`
 - **Logs:** `Documents/DIMCreator/Logs`
 - **Config files:** `Documents/DIMCreator/Config`
+- **Managed cover images:** `Documents/DIMCreator/Assets/Covers`
 
 Custom stores, tags, folder settings, and saved sessions are kept outside the application folder so they survive app updates.
 
@@ -91,6 +92,10 @@ To build the Windows executable locally:
 pip install -r requirements-build.txt
 pyinstaller -y DIM-Creator.spec
 ```
+
+Release and CI environments install the fully resolved, hash-verified
+`requirements-win.lock`. Regenerate it for Windows/Python 3.11 after changing
+any direct requirement.
 
 ## Keyboard Shortcuts
 

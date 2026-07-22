@@ -1,6 +1,3 @@
-from PyInstaller.utils.hooks import collect_submodules, collect_data_files
-
-hidden = collect_submodules('qfluentwidgets')
 datas = [('assets', 'assets')]
 
 block_cipher = None
@@ -10,10 +7,10 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=datas,
-    hiddenimports=hidden,
+    hiddenimports=[],
     hookspath=[],
     runtime_hooks=[],
-    excludes=[],
+    excludes=['numpy', 'scipy', 'matplotlib', 'tkinter'],
     noarchive=False,
 )
 
@@ -28,7 +25,7 @@ exe = EXE(
     name='DIM-Creator',
     debug=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=False,
     icon='assets/images/logo/favicon.ico',
     runtime_tmpdir=None,

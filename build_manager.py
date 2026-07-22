@@ -1,29 +1,39 @@
 import os
+import re
 import uuid
 from typing import Optional, Any
 from session import Session, Build
 from utils import (
-    create_build_folder, 
-    delete_build_folder
+    create_build_folder,
+    delete_build_folder,
+    has_reparse_point,
 )
 from logger_utils import get_logger
 
 log = get_logger(__name__)
 
+MAX_BUILDS = 99
+_PREFIX_RE = re.compile(r"^[A-Z][A-Z0-9]{0,6}$")
+_SYNCED_FIELDS = ['store', 'product_name', 'prefix', 'sku', 'tags', 'image_path']
+
 
 def create_build(session: Session) -> Build:
+    if len(session.builds) >= MAX_BUILDS:
+        raise ValueError(f"A session cannot contain more than {MAX_BUILDS} builds")
+
+    session.recalculate_derived_fields()
     if not (1 <= session.next_build_number <= 99999):
-        raise ValueError(f"Build number {session.next_build_number} is out of valid range (1-99999)")
+        raise ValueError(
+            f"Build number {session.next_build_number} is out of valid range (1-99999)"
+        )
     
     build_id = f"build_{session.next_build_number:03d}"
     folder_name = f"Build{session.next_build_number:03d}"
     build_guid = str(uuid.uuid4())
     
-    if session.builds:
-        max_build = max(build.part for build in session.builds)
-        build_number = max_build + 1
-    else:
-        build_number = 1
+    build_number = len(session.builds) + 1
+    if build_number > MAX_BUILDS:
+        raise ValueError(f"Package part must be between 1 and {MAX_BUILDS}")
     
     if build_number == 1:
         new_build = Build(
@@ -47,6 +57,10 @@ def create_build(session: Session) -> Build:
     create_build_folder(folder_name)
     session.builds.append(new_build)
     session.next_build_number += 1
+    if not any(
+        build.id == session.last_selected_build_id for build in session.builds
+    ):
+        session.last_selected_build_id = new_build.id
     
     return new_build
 
@@ -65,7 +79,9 @@ def delete_build(session: Session, build_id: str) -> Session:
     session.builds.remove(build_to_delete)
     
     if not session.builds:
-        create_build(session)
+        session.last_selected_build_id = ""
+        new_build = create_build(session)
+        session.last_selected_build_id = new_build.id
         return session
     
     if build_to_delete.part == 1:
@@ -81,6 +97,10 @@ def delete_build(session: Session, build_id: str) -> Session:
     
     for i, build in enumerate(session.builds, start=1):
         build.part = i
+
+    if session.last_selected_build_id == build_id:
+        session.last_selected_build_id = session.builds[0].id
+    session.recalculate_derived_fields()
     
     return session
 
@@ -89,7 +109,7 @@ def sync_to_children(session: Session, field: Optional[str] = None) -> None:
     if not session.builds:
         return
     
-    synced_fields = ['store', 'product_name', 'prefix', 'sku', 'tags', 'image_path']
+    synced_fields = _SYNCED_FIELDS
     if field:
         fields_to_sync = [field] if field in synced_fields else []
     else:
@@ -130,7 +150,7 @@ def get_effective_value(session: Session, build: Build, field: str) -> Any:
 
 
 def get_build_data(session: Session, build: Build) -> dict[str, Any]:
-    synced_fields = ['store', 'product_name', 'prefix', 'sku', 'tags', 'image_path']
+    synced_fields = _SYNCED_FIELDS
     
     data = {
         'id': build.id,
@@ -193,12 +213,24 @@ def validate_build(build: Build, content_dir: str, daz_folders: list[str],
     if os.path.exists(content_dir):
         try:
             daz_folders_lower = {folder.casefold() for folder in daz_folders}
-            content_items = os.listdir(content_dir)
-            for item in content_items:
+            for item in os.listdir(content_dir):
                 if item.casefold() in daz_folders_lower:
                     item_path = os.path.join(content_dir, item)
-                    if os.path.isdir(item_path):
-                        has_content = True
+                    if not os.path.isdir(item_path) or has_reparse_point(item_path):
+                        continue
+                    for root, dirnames, filenames in os.walk(item_path, followlinks=False):
+                        dirnames[:] = [
+                            name for name in dirnames
+                            if not has_reparse_point(os.path.join(root, name))
+                        ]
+                        if any(
+                            name.casefold() not in {'.ds_store', 'thumbs.db', 'desktop.ini'}
+                            and not has_reparse_point(os.path.join(root, name))
+                            for name in filenames
+                        ):
+                            has_content = True
+                            break
+                    if has_content:
                         break
         except OSError as e:
             log.warning("Failed to list contents of '%s' while validating build '%s': %s",
@@ -211,6 +243,7 @@ def validate_build(build: Build, content_dir: str, daz_folders: list[str],
         raise TypeError("effective_values must be a dictionary or None")
     
     required_fields = ['store', 'product_name', 'prefix', 'sku']
+    values: dict[str, Any] = {}
     for field in required_fields:
         if effective_values and field in effective_values:
             value = effective_values[field]
@@ -218,8 +251,23 @@ def validate_build(build: Build, content_dir: str, daz_folders: list[str],
             value = getattr(build, field, "")
         if not isinstance(value, str) or not value.strip():
             return "incomplete"
+        values[field] = value.strip()
+
+    if _PREFIX_RE.fullmatch(values['prefix']) is None:
+        return "incomplete"
+    if not values['sku'].isdigit() or not 1 <= int(values['sku']) <= 99999999:
+        return "incomplete"
+
+    tags = effective_values.get('tags', build.tags) if effective_values else build.tags
+    if not isinstance(tags, str):
+        return "incomplete"
+    selected_tags = {tag.strip().casefold() for tag in tags.split(',') if tag.strip()}
+    if selected_tags & {'plugin', 'software'}:
+        return "incomplete"
     
-    if not build.guid or len(build.guid) < 32:
+    try:
+        uuid.UUID(build.guid)
+    except (ValueError, AttributeError, TypeError):
         return "incomplete"
     
     return "ready"
@@ -234,7 +282,11 @@ def _get_build1_build(session: Session) -> Optional[Build]:
 
 
 def set_field_override(session: Session, build: Build, field: str, value: Any) -> None:
-    synced_fields = ['store', 'product_name', 'prefix', 'sku', 'tags', 'image_path']
+    synced_fields = _SYNCED_FIELDS
+    if field not in synced_fields:
+        raise ValueError(f"Unsupported synchronized build field: {field}")
+    if not isinstance(value, str):
+        raise TypeError(f"Build field '{field}' must be a string")
     
     if build.part == 1:
         setattr(build, field, value)
