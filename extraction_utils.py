@@ -25,6 +25,7 @@ from utils import (
     downloads_dir,
     find_7z_executable,
     find_unrar_executable,
+    hidden_subprocess_kwargs,
 )
 
 
@@ -101,16 +102,10 @@ class ExtractionPlan:
 class PlannedEmbeddedArchive:
     relative_path: str
     staged_path: str
-    is_template: bool = False
-
-    @property
-    def display_name(self) -> str:
-        return self.relative_path
 
 
 @dataclass
 class ArchiveImportPlan:
-    source_archive: str
     stage_root: str
     direct_content_root: str | None
     content_archives: tuple[PlannedEmbeddedArchive, ...] = ()
@@ -181,15 +176,6 @@ class ArchivePlanningResult:
         return self.status == "success"
 
 
-@dataclass(frozen=True)
-class ExtractionBuildUpdate:
-    build_id: str
-    folder: str
-    part: int
-    content_status: str
-    new_build: dict | None = None
-
-
 @dataclass
 class ExtractionResult:
     status: str
@@ -198,7 +184,7 @@ class ExtractionResult:
     copied_templates: list[str] = field(default_factory=list)
     skipped_files: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
-    build_updates: list[ExtractionBuildUpdate] = field(default_factory=list)
+    new_builds: list[dict[str, Any]] = field(default_factory=list)
     next_build_number: int | None = None
     _transaction: _FileTransaction | None = field(
         default=None, repr=False, compare=False
@@ -719,17 +705,6 @@ def _snapshot_archive(
     return snapshot
 
 
-def _process_kwargs() -> dict:
-    if os.name != "nt":
-        return {}
-    kwargs = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
-    startupinfo = subprocess.STARTUPINFO()
-    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = subprocess.SW_HIDE
-    kwargs["startupinfo"] = startupinfo
-    return kwargs
-
-
 def _stop_process(process: subprocess.Popen) -> None:
     if process.poll() is not None:
         return
@@ -759,7 +734,7 @@ def _run_external(
             stdin=subprocess.DEVNULL,
             stdout=spool,
             stderr=subprocess.STDOUT,
-            **_process_kwargs(),
+            **hidden_subprocess_kwargs(),
         )
         started = time.monotonic()
         last_progress = started
@@ -1324,7 +1299,6 @@ class _TreeAnalysis:
     content_files: list[tuple[str, str]] = field(default_factory=list)
     embedded_archives: list[str] = field(default_factory=list)
     template_archives: list[str] = field(default_factory=list)
-    base_paths: set[str] = field(default_factory=set)
 
 
 def _scan_extracted_tree(
@@ -1379,7 +1353,6 @@ def _scan_extracted_tree(
                     )
                 output_paths[key] = output_relative
                 analysis.content_files.append((source, output_relative))
-                analysis.base_paths.add("/".join(parts[:root_index]))
             elif _is_archive_name(normalised):
                 if is_template_archive(normalised):
                     analysis.template_archives.append(source)
@@ -1406,22 +1379,18 @@ def _stage_content(
         _copy_file(source, target, cancel_check)
 
 
-def _stage_template(
-    template_path: str,
-    template_stage: str,
-    cancel_check: Callable[[], bool],
-) -> str:
+def _validate_template_source(template_path: str) -> str:
+    template_path = os.path.abspath(template_path)
     name = os.path.basename(template_path)
     _normalise_member_path(name)
-    if os.path.getsize(template_path) > MAX_FILE_UNCOMPRESSED_BYTES:
+    if not _is_archive_name(name):
+        raise ExtractionError(f"Unsupported template archive type: {name}")
+    source_stat = os.lstat(template_path)
+    if not stat.S_ISREG(source_stat.st_mode) or _is_link_or_reparse(template_path):
+        raise UnsafeArchiveError(f"Template archive must be a regular file: {name}")
+    if source_stat.st_size > MAX_FILE_UNCOMPRESSED_BYTES:
         raise UnsafeArchiveError(f"Template archive exceeds the 50 GiB limit: {name}")
-    _ensure_free_space(template_stage, os.path.getsize(template_path))
-    os.makedirs(template_stage, exist_ok=True)
-    target = _safe_destination(template_stage, name)
-    if os.path.lexists(target):
-        raise UnsafeArchiveError(f"Duplicate template archive: {name}")
-    _copy_file(template_path, target, cancel_check)
-    return target
+    return template_path
 
 
 @dataclass
@@ -1456,7 +1425,6 @@ def _prepare_archive(
     )
     analysis = _scan_extracted_tree(outer_root, daz_folders, cancel_check)
     content_root = os.path.join(work_root, "content")
-    template_root = os.path.join(work_root, "templates")
     templates = []
 
     if analysis.content_files:
@@ -1501,7 +1469,7 @@ def _prepare_archive(
                     f"Duplicate template archive name: {os.path.basename(template_path)}"
                 )
             seen_templates.add(name_key)
-            templates.append(_stage_template(template_path, template_root, cancel_check))
+            templates.append(_validate_template_source(template_path))
 
     return _PreparedArchive(content_root, templates)
 
@@ -2066,14 +2034,11 @@ def _commit_with_optional_prompt(
 def _planned_archive(
     path: str,
     outer_root: str,
-    *,
-    is_template: bool,
 ) -> PlannedEmbeddedArchive:
     relative = os.path.relpath(path, outer_root).replace(os.sep, "/")
     return PlannedEmbeddedArchive(
         _normalise_member_path(relative),
         os.path.abspath(path),
-        is_template,
     )
 
 
@@ -2107,11 +2072,11 @@ def plan_archive_import(
         warning = None
 
         template_items = [
-            _planned_archive(path, outer_root, is_template=True)
+            _planned_archive(path, outer_root)
             for path in analysis.template_archives
         ]
         embedded_items = [
-            _planned_archive(path, outer_root, is_template=False)
+            _planned_archive(path, outer_root)
             for path in analysis.embedded_archives
         ]
         ignored_items = []
@@ -2149,7 +2114,6 @@ def plan_archive_import(
             template_items = []
 
         plan = ArchiveImportPlan(
-            source_archive=os.path.abspath(archive_path),
             stage_root=stage_root,
             direct_content_root=direct_content_root,
             content_archives=tuple(embedded_items),
@@ -2172,8 +2136,6 @@ def plan_archive_import(
 
 
 class ArchivePlanningWorker(QThread):
-    planReady = Signal(object)
-    planningError = Signal(str)
     resultReady = Signal(object)
 
     def __init__(
@@ -2187,7 +2149,6 @@ class ArchivePlanningWorker(QThread):
         self.archive_path = archive_path
         self.daz_folders = tuple(str(folder) for folder in daz_folders)
         self.enable_template_detection = enable_template_detection
-        self.result: ArchivePlanningResult | None = None
 
     def requestCancellation(self) -> None:
         self.requestInterruption()
@@ -2203,23 +2164,14 @@ class ArchivePlanningWorker(QThread):
             result = ArchivePlanningResult(
                 "success", "Archive analysis completed successfully.", plan
             )
-            self.result = result
             self.resultReady.emit(result)
-            self.planReady.emit(plan)
         except ExtractionCancelled as exc:
             result = ArchivePlanningResult("cancelled", _user_error(exc))
-            self.result = result
             self.resultReady.emit(result)
-            self.planningError.emit(result.message)
         except Exception as exc:
             log.exception("Archive planning failed")
             result = ArchivePlanningResult("error", _user_error(exc))
-            self.result = result
             self.resultReady.emit(result)
-            self.planningError.emit(result.message)
-
-
-_SYNCED_BUILD_FIELDS = ("store", "product_name", "prefix", "sku", "tags", "image_path")
 
 
 @dataclass(frozen=True)
@@ -2227,11 +2179,6 @@ class _BuildSnapshot:
     build_id: str
     folder: str
     part: int
-    guid: str
-    effective_values: tuple[tuple[str, str], ...]
-
-    def effective(self) -> dict[str, str]:
-        return dict(self.effective_values)
 
 
 @dataclass(frozen=True)
@@ -2245,105 +2192,41 @@ class _BuildTarget:
 
 def _snapshot_builds(session) -> tuple[_BuildSnapshot, ...]:
     builds = tuple(getattr(session, "builds", ()))
-    parent = next((build for build in builds if getattr(build, "part", None) == 1), None)
-    snapshots = []
-    for build in builds:
-        effective = {}
-        overrides = getattr(build, "overrides", {})
-        if not isinstance(overrides, dict):
-            overrides = {}
-        for field_name in _SYNCED_BUILD_FIELDS:
-            if getattr(build, "part", None) == 1:
-                value = getattr(build, field_name, "")
-            elif field_name in overrides:
-                value = overrides[field_name]
-            elif parent is not None:
-                value = getattr(parent, field_name, "")
-            else:
-                value = getattr(build, field_name, "")
-            effective[field_name] = value if isinstance(value, str) else ""
-        snapshots.append(
-            _BuildSnapshot(
-                str(getattr(build, "id", "")),
-                str(getattr(build, "folder", "")),
-                int(getattr(build, "part", 0)),
-                str(getattr(build, "guid", "")),
-                tuple(effective.items()),
-            )
+    return tuple(
+        _BuildSnapshot(
+            str(getattr(build, "id", "")),
+            str(getattr(build, "folder", "")),
+            int(getattr(build, "part", 0)),
         )
-    return tuple(snapshots)
-
-
-def _proposed_content_status(
-    content_dir: str,
-    daz_folders: set[str],
-    snapshot: _BuildSnapshot,
-    cancel_check: Callable[[], bool] | None = None,
-) -> str:
-    has_content = False
-    if os.path.isdir(content_dir):
-        for current, directories, files in os.walk(content_dir):
-            _check_cancelled(cancel_check)
-            relative = os.path.relpath(current, content_dir)
-            parts = () if relative == "." else relative.split(os.sep)
-            if any(part.casefold() in daz_folders for part in parts) and files:
-                has_content = True
-                break
-            directories[:] = [
-                name for name in directories if not _is_link_or_reparse(os.path.join(current, name))
-            ]
-    if not has_content:
-        return "empty"
-
-    effective = snapshot.effective()
-    for field_name in ("store", "product_name", "prefix", "sku"):
-        value = effective.get(field_name, "")
-        if not isinstance(value, str) or not value.strip():
-            return "incomplete"
-    try:
-        uuid.UUID(snapshot.guid)
-    except (ValueError, TypeError, AttributeError):
-        return "incomplete"
-    return "ready"
+        for build in builds
+    )
 
 
 class ContentExtractionWorker(QThread):
-    extractionComplete = Signal()
-    extractionError = Signal(str)
     resultReady = Signal(object)
     conflictsDetected = Signal(object)
 
     def __init__(
         self,
-        archive_file_path,
-        daz_folders,
-        content_dir,
-        enable_template_detection,
-        template_destination,
+        import_plan: ArchiveImportPlan,
+        content_dir: str,
+        template_destination: str | None,
         parent=None,
+        *,
         conflict_policy: ConflictPolicy | str = ConflictPolicy.CANCEL,
-        import_plan: ArchiveImportPlan | None = None,
         defer_finalize: bool = False,
         prompt_on_conflicts: bool = False,
     ):
         super().__init__(parent)
-        if isinstance(archive_file_path, ArchiveImportPlan):
-            if import_plan is not None and import_plan is not archive_file_path:
-                raise ValueError("Conflicting archive import plans were supplied.")
-            import_plan = archive_file_path
-            archive_file_path = import_plan.source_archive
-        self.archive_file_path = archive_file_path
+        if not isinstance(import_plan, ArchiveImportPlan):
+            raise TypeError("ContentExtractionWorker requires an ArchiveImportPlan.")
         self.import_plan = import_plan
-        self.daz_folders = {str(folder).casefold() for folder in daz_folders}
         self.content_dir = content_dir
-        self.enable_template_detection = enable_template_detection
         self.template_destination = template_destination or downloads_dir()
         self.conflict_policy = ConflictPolicy.coerce(conflict_policy)
         self.defer_finalize = bool(defer_finalize)
         self.prompt_on_conflicts = bool(prompt_on_conflicts)
         self._conflict_gate = _ConflictDecisionGate()
-        self.copiedTemplates: list[str] = []
-        self.result: ExtractionResult | None = None
 
     def _cancelled(self) -> bool:
         return self.isInterruptionRequested()
@@ -2355,91 +2238,69 @@ class ContentExtractionWorker(QThread):
     def resolveConflictPolicy(self, policy: ConflictPolicy | str) -> None:
         self._conflict_gate.resolve(policy)
 
-    def _publish_result(self, result: ExtractionResult) -> None:
-        self.result = result
-        self.resultReady.emit(result)
-
     def run(self):
         transaction = _FileTransaction(self.conflict_policy)
         try:
-            log.info("Starting safe extraction of %s", self.archive_file_path)
-            with tempfile.TemporaryDirectory(prefix="dim_extract_") as work_root:
-                if self.import_plan is not None:
-                    self.import_plan.claim()
-                    if not self.import_plan.is_direct_content:
-                        raise ExtractionError(
-                            "Wrapper import plans must be committed with MultiBuildExtractionWorker."
-                        )
-                    prepared = _PreparedArchive(
-                        self.import_plan.direct_content_root,
-                        [item.staged_path for item in self.import_plan.template_archives],
+            self.import_plan.claim()
+            if not self.import_plan.is_direct_content:
+                raise ExtractionError(
+                    "Wrapper import plans must be committed with MultiBuildExtractionWorker."
+                )
+            transaction.add_tree(
+                self.import_plan.direct_content_root,
+                self.content_dir,
+                self._cancelled,
+                containment_root=_content_containment_root(self.content_dir),
+            )
+            template_targets = []
+            for item in self.import_plan.template_archives:
+                template = _validate_template_source(item.staged_path)
+                transaction.add_file(template, self.template_destination)
+                template_targets.append(
+                    (
+                        os.path.abspath(
+                            os.path.join(
+                                self.template_destination, os.path.basename(template)
+                            )
+                        ).casefold(),
+                        os.path.basename(template),
                     )
-                else:
-                    prepared = _prepare_archive(
-                        self.archive_file_path,
-                        work_root,
-                        self.daz_folders,
-                        self.enable_template_detection,
-                        self._cancelled,
-                        _ExtractionBudget(),
-                    )
-                transaction.add_tree(
-                    prepared.content_root,
-                    self.content_dir,
-                    self._cancelled,
-                    containment_root=_content_containment_root(self.content_dir),
                 )
-                template_targets = []
-                for template in prepared.templates:
-                    transaction.add_file(template, self.template_destination)
-                    template_targets.append(
-                        (
-                            os.path.abspath(
-                                os.path.join(self.template_destination, os.path.basename(template))
-                            ).casefold(),
-                            os.path.basename(template),
-                        )
-                    )
-                _commit_with_optional_prompt(
-                    transaction,
-                    prompt_on_conflicts=self.prompt_on_conflicts,
-                    gate=self._conflict_gate,
-                    emit_conflicts=self.conflictsDetected.emit,
-                    cancel_check=self._cancelled,
-                )
-                applied = {os.path.abspath(path).casefold() for path in transaction.applied}
-                self.copiedTemplates = [
-                    name for path, name in template_targets if path in applied
-                ]
-                content_prefix = (
-                    os.path.abspath(self.content_dir).casefold().rstrip(os.sep)
-                    + os.sep
-                )
-                modified_builds = (
-                    [os.path.basename(os.path.dirname(self.content_dir))]
-                    if any(path.startswith(content_prefix) for path in applied)
-                    else []
-                )
-                if not self.defer_finalize:
-                    transaction.finalize()
+            _commit_with_optional_prompt(
+                transaction,
+                prompt_on_conflicts=self.prompt_on_conflicts,
+                gate=self._conflict_gate,
+                emit_conflicts=self.conflictsDetected.emit,
+                cancel_check=self._cancelled,
+            )
+            applied = {os.path.abspath(path).casefold() for path in transaction.applied}
+            copied_templates = [name for path, name in template_targets if path in applied]
+            content_prefix = (
+                os.path.abspath(self.content_dir).casefold().rstrip(os.sep) + os.sep
+            )
+            modified_builds = (
+                [os.path.basename(os.path.dirname(self.content_dir))]
+                if any(path.startswith(content_prefix) for path in applied)
+                else []
+            )
+            if not self.defer_finalize:
+                transaction.finalize()
             result = ExtractionResult(
                 "success",
                 "Extraction completed successfully.",
                 modified_builds=modified_builds,
-                copied_templates=list(self.copiedTemplates),
+                copied_templates=copied_templates,
                 skipped_files=list(transaction.skipped),
                 _transaction=transaction if self.defer_finalize else None,
             )
-            self._publish_result(result)
-            self.extractionComplete.emit()
+            self.resultReady.emit(result)
         except ExtractionCancelled as exc:
             result = _result_after_rollback(
                 transaction,
                 exc,
                 skipped_files=transaction.skipped,
             )
-            self._publish_result(result)
-            self.extractionError.emit(result.message)
+            self.resultReady.emit(result)
         except Exception as exc:
             log.exception("Extraction failed")
             result = _result_after_rollback(
@@ -2447,99 +2308,42 @@ class ContentExtractionWorker(QThread):
                 exc,
                 skipped_files=transaction.skipped,
             )
-            self._publish_result(result)
-            self.extractionError.emit(result.message)
+            self.resultReady.emit(result)
         finally:
-            if self.import_plan is not None:
-                self.import_plan.cleanup()
-
-    # Compatibility helpers used by older callers and tests.
-    def scanDirectory(self, directory: str):
-        analysis = _scan_extracted_tree(
-            directory, self.daz_folders, self._cancelled
-        )
-        return analysis.base_paths, analysis.embedded_archives + analysis.template_archives
-
-    def copyTemplateArchive(self, template_archive_path: str):
-        transaction = _FileTransaction(self.conflict_policy)
-        transaction.add_file(template_archive_path, self.template_destination)
-        transaction.commit(self._cancelled)
-        transaction.finalize()
-        name = os.path.basename(template_archive_path)
-        self.copiedTemplates.append(name)
-
-    def processEmbeddedArchive(self, embedded_archive_path: str, base_paths: set):
-        del base_paths
-        with tempfile.TemporaryDirectory(prefix="dim_nested_") as work_root:
-            prepared = _prepare_archive(
-                embedded_archive_path,
-                work_root,
-                self.daz_folders,
-                self.enable_template_detection,
-                self._cancelled,
-                _ExtractionBudget(),
-            )
-            transaction = _FileTransaction(self.conflict_policy)
-            transaction.add_tree(
-                prepared.content_root,
-                self.content_dir,
-                self._cancelled,
-                containment_root=_content_containment_root(self.content_dir),
-            )
-            transaction.commit(self._cancelled)
-            transaction.finalize()
-
-    def extractRelevantContent(self, directory: str, base_paths: set):
-        del base_paths
-        analysis = _scan_extracted_tree(
-            directory, self.daz_folders, self._cancelled
-        )
-        if not analysis.content_files:
-            raise ExtractionError("No recognized DAZ main folders found.")
-        with tempfile.TemporaryDirectory(prefix="dim_content_") as work_root:
-            stage = os.path.join(work_root, "content")
-            _stage_content(analysis, stage, self._cancelled)
-            transaction = _FileTransaction(self.conflict_policy)
-            transaction.add_tree(
-                stage,
-                self.content_dir,
-                self._cancelled,
-                containment_root=_content_containment_root(self.content_dir),
-            )
-            transaction.commit(self._cancelled)
-            transaction.finalize()
+            self.import_plan.cleanup()
 
 
 class MultiBuildExtractionWorker(QThread):
-    extractionComplete = Signal(list)
-    extractionError = Signal(str)
     extractionProgress = Signal(str)
     resultReady = Signal(object)
     conflictsDetected = Signal(object)
 
     def __init__(
         self,
-        content_archives,
-        template_archives,
-        daz_folders,
-        session,
-        enable_template_detection,
-        template_destination,
+        import_plan: ArchiveImportPlan,
+        content_archives: Sequence[PlannedEmbeddedArchive],
+        template_archives: Sequence[PlannedEmbeddedArchive],
+        daz_folders: Iterable[str],
+        session: Any,
+        enable_template_detection: bool,
+        template_destination: str | None,
         parent=None,
+        *,
         conflict_policy: ConflictPolicy | str = ConflictPolicy.CANCEL,
-        import_plan: ArchiveImportPlan | None = None,
         defer_finalize: bool = False,
         prompt_on_conflicts: bool = False,
     ):
         super().__init__(parent)
-        self.content_archives = [
-            item.staged_path if isinstance(item, PlannedEmbeddedArchive) else str(item)
-            for item in content_archives
-        ]
-        self.template_archives = [
-            item.staged_path if isinstance(item, PlannedEmbeddedArchive) else str(item)
-            for item in template_archives
-        ]
+        if not isinstance(import_plan, ArchiveImportPlan):
+            raise TypeError("MultiBuildExtractionWorker requires an ArchiveImportPlan.")
+        content_archives = tuple(content_archives)
+        template_archives = tuple(template_archives)
+        if any(not isinstance(item, PlannedEmbeddedArchive) for item in content_archives):
+            raise TypeError("Content selections must be PlannedEmbeddedArchive values.")
+        if any(not isinstance(item, PlannedEmbeddedArchive) for item in template_archives):
+            raise TypeError("Template selections must be PlannedEmbeddedArchive values.")
+        self.content_archives = content_archives
+        self.template_archives = template_archives
         self.import_plan = import_plan
         self.daz_folders = {str(folder).casefold() for folder in daz_folders}
         self.enable_template_detection = enable_template_detection
@@ -2548,20 +2352,9 @@ class MultiBuildExtractionWorker(QThread):
         self.defer_finalize = bool(defer_finalize)
         self.prompt_on_conflicts = bool(prompt_on_conflicts)
         self._conflict_gate = _ConflictDecisionGate()
-        self.copiedTemplates: list[str] = []
-        self.modified_builds: list[str] = []
-        self.result: ExtractionResult | None = None
         self._build_snapshots = _snapshot_builds(session)
         self._next_build_number = int(getattr(session, "next_build_number", 2))
         self.part_to_build = {build.part: build for build in self._build_snapshots}
-        self.plan = ExtractionPlan(
-            tuple(
-                ExtractionBuildPlan(index, path)
-                for index, path in enumerate(self.content_archives, 1)
-            ),
-            tuple(self.template_archives),
-            self.conflict_policy,
-        )
 
     def _cancelled(self) -> bool:
         return self.isInterruptionRequested()
@@ -2573,36 +2366,15 @@ class MultiBuildExtractionWorker(QThread):
     def resolveConflictPolicy(self, policy: ConflictPolicy | str) -> None:
         self._conflict_gate.resolve(policy)
 
-    def _publish_result(self, result: ExtractionResult) -> None:
-        self.result = result
-        self.resultReady.emit(result)
-
     def _claim_import_plan(self) -> None:
-        if self.import_plan is None:
-            return
         self.import_plan.claim()
         if self.import_plan.is_direct_content:
             raise ExtractionError(
                 "Direct-content import plans must be committed with ContentExtractionWorker."
             )
-        selectable = (
-            *self.import_plan.content_archives,
-            *self.import_plan.template_archives,
-            *self.import_plan.ignored_archives,
-        )
-        allowed_content = {
-            os.path.abspath(item.staged_path).casefold() for item in selectable
-        }
-        allowed_templates = set(allowed_content)
-        if any(
-            os.path.abspath(path).casefold() not in allowed_content
-            for path in self.content_archives
-        ):
+        if any(item not in self.import_plan.content_archives for item in self.content_archives):
             raise UnsafeArchiveError("Selected content archive is not part of the import plan.")
-        if any(
-            os.path.abspath(path).casefold() not in allowed_templates
-            for path in self.template_archives
-        ):
+        if any(item not in self.import_plan.template_archives for item in self.template_archives):
             raise UnsafeArchiveError("Selected template archive is not part of the import plan.")
 
     def _allocate_builds(self):
@@ -2617,9 +2389,8 @@ class MultiBuildExtractionWorker(QThread):
         used_folders = {build.folder.casefold() for build in self._build_snapshots}
         next_number = self._next_build_number
         targets = []
-        parent = self.part_to_build.get(1)
 
-        for part, archive_path in enumerate(self.content_archives, 1):
+        for part, archive in enumerate(self.content_archives, 1):
             snapshot = self.part_to_build.get(part)
             new_build = None
             if snapshot is None:
@@ -2632,24 +2403,10 @@ class MultiBuildExtractionWorker(QThread):
                         break
                     next_number += 1
                 guid = str(uuid.uuid4())
-                effective = (
-                    parent.effective()
-                    if parent is not None and part != 1
-                    else {
-                        "store": "",
-                        "product_name": "",
-                        "prefix": "",
-                        "sku": "",
-                        "tags": "DAZStudio4_5",
-                        "image_path": "",
-                    }
-                )
                 snapshot = _BuildSnapshot(
                     build_id,
                     folder,
                     part,
-                    guid,
-                    tuple(effective.items()),
                 )
                 new_build = {
                     "id": build_id,
@@ -2672,7 +2429,7 @@ class MultiBuildExtractionWorker(QThread):
             targets.append(
                 _BuildTarget(
                     part,
-                    archive_path,
+                    archive.staged_path,
                     snapshot,
                     get_build_content_dir(snapshot.folder),
                     new_build,
@@ -2684,34 +2441,13 @@ class MultiBuildExtractionWorker(QThread):
         transaction = _FileTransaction(self.conflict_policy)
         try:
             self._claim_import_plan()
-            if self.import_plan is None:
-                ordered, warning = detect_heuristic_ordering(self.content_archives)
-                if warning:
-                    log.info(warning)
-                self.content_archives = ordered
-            else:
-                # Validate the final dialog selection without changing the
-                # user-confirmed build order.
-                detect_heuristic_ordering(self.content_archives)
+            # Validate the final dialog selection without changing the
+            # user-confirmed build order.
+            detect_heuristic_ordering(
+                [item.staged_path for item in self.content_archives]
+            )
             targets, next_number = self._allocate_builds()
-            self.plan = ExtractionPlan(
-                tuple(
-                    ExtractionBuildPlan(
-                        target.part,
-                        target.archive_path,
-                        target.content_dir,
-                        target.snapshot.build_id,
-                    )
-                    for target in targets
-                ),
-                tuple(self.template_archives),
-                self.conflict_policy,
-            )
-            budget = (
-                self.import_plan.initial_budget()
-                if self.import_plan is not None
-                else _ExtractionBudget()
-            )
+            budget = self.import_plan.initial_budget()
 
             with tempfile.TemporaryDirectory(prefix="dim_multi_extract_") as work_root:
                 template_targets = []
@@ -2728,8 +2464,8 @@ class MultiBuildExtractionWorker(QThread):
                         self.enable_template_detection,
                         self._cancelled,
                         budget,
-                        allow_nested=self.import_plan is None,
-                        snapshot_source=self.import_plan is None,
+                        allow_nested=False,
+                        snapshot_source=False,
                     )
                     transaction.add_tree(
                         prepared.content_root,
@@ -2753,32 +2489,27 @@ class MultiBuildExtractionWorker(QThread):
                             )
                         )
 
-                template_stage = os.path.join(work_root, "selected_templates")
                 seen_templates = set()
-                for template_path in self.template_archives:
+                for item in self.template_archives:
                     if self._cancelled():
                         raise ExtractionCancelled("Extraction cancelled.")
-                    if self.import_plan is None and not is_template_archive(template_path):
-                        raise ExtractionError(
-                            f"Selected template does not contain a template word: {os.path.basename(template_path)}"
-                        )
+                    template_path = _validate_template_source(item.staged_path)
                     key = os.path.basename(template_path).casefold()
                     if key in seen_templates:
                         raise UnsafeArchiveError(
                             f"Duplicate template archive name: {os.path.basename(template_path)}"
-                        )
+                    )
                     seen_templates.add(key)
-                    staged = _stage_template(template_path, template_stage, self._cancelled)
-                    transaction.add_file(staged, self.template_destination)
+                    transaction.add_file(template_path, self.template_destination)
                     template_targets.append(
                         (
                             os.path.abspath(
                                 os.path.join(
                                     self.template_destination,
-                                    os.path.basename(staged),
+                                    os.path.basename(template_path),
                                 )
                             ).casefold(),
-                            os.path.basename(staged),
+                            os.path.basename(template_path),
                         )
                     )
 
@@ -2790,37 +2521,17 @@ class MultiBuildExtractionWorker(QThread):
                     cancel_check=self._cancelled,
                 )
                 applied_paths = [os.path.abspath(path).casefold() for path in transaction.applied]
-                self.modified_builds = []
-                build_updates = []
+                modified_builds = []
                 for target in targets:
-                    status = _proposed_content_status(
-                        target.content_dir,
-                        self.daz_folders,
-                        target.snapshot,
-                        self._cancelled,
-                    )
                     content_abs = os.path.abspath(target.content_dir).casefold()
                     if any(
                         path.startswith(content_abs + os.sep.casefold())
                         for path in applied_paths
                     ):
-                        self.modified_builds.append(target.snapshot.folder)
-                    new_build = None
-                    if target.new_build is not None:
-                        new_build = dict(target.new_build)
-                        new_build["content_status"] = status
-                    build_updates.append(
-                        ExtractionBuildUpdate(
-                            target.snapshot.build_id,
-                            target.snapshot.folder,
-                            target.part,
-                            status,
-                            new_build,
-                        )
-                    )
+                        modified_builds.append(target.snapshot.folder)
 
                 applied = set(applied_paths)
-                self.copiedTemplates = [
+                copied_templates = [
                     name for path, name in template_targets if path in applied
                 ]
                 if not self.defer_finalize:
@@ -2829,23 +2540,25 @@ class MultiBuildExtractionWorker(QThread):
             result = ExtractionResult(
                 "success",
                 "Extraction completed successfully.",
-                modified_builds=list(self.modified_builds),
-                copied_templates=list(self.copiedTemplates),
+                modified_builds=modified_builds,
+                copied_templates=copied_templates,
                 skipped_files=list(transaction.skipped),
-                build_updates=build_updates,
+                new_builds=[
+                    dict(target.new_build)
+                    for target in targets
+                    if target.new_build is not None
+                ],
                 next_build_number=next_number,
                 _transaction=transaction if self.defer_finalize else None,
             )
-            self._publish_result(result)
-            self.extractionComplete.emit(self.modified_builds)
+            self.resultReady.emit(result)
         except ExtractionCancelled as exc:
             result = _result_after_rollback(
                 transaction,
                 exc,
                 skipped_files=transaction.skipped,
             )
-            self._publish_result(result)
-            self.extractionError.emit(result.message)
+            self.resultReady.emit(result)
         except Exception as exc:
             log.exception("Multi-build extraction failed")
             result = _result_after_rollback(
@@ -2853,65 +2566,6 @@ class MultiBuildExtractionWorker(QThread):
                 exc,
                 skipped_files=transaction.skipped,
             )
-            self._publish_result(result)
-            self.extractionError.emit(result.message)
+            self.resultReady.emit(result)
         finally:
-            if self.import_plan is not None:
-                self.import_plan.cleanup()
-
-    def _findBuildByBuildNumber(self, part_num):
-        return self.part_to_build.get(part_num)
-
-    # Compatibility wrappers retained for callers outside the main UI.
-    def _copyTemplateArchive(self, template_path):
-        transaction = _FileTransaction(self.conflict_policy)
-        transaction.add_file(template_path, self.template_destination)
-        transaction.commit(self._cancelled)
-        transaction.finalize()
-        self.copiedTemplates.append(os.path.basename(template_path))
-
-    def _scanDirectory(self, directory):
-        analysis = _scan_extracted_tree(
-            directory, self.daz_folders, self._cancelled
-        )
-        return analysis.base_paths, analysis.embedded_archives + analysis.template_archives
-
-    def _processEmbeddedArchive(self, embedded_archive_path, content_dir):
-        with tempfile.TemporaryDirectory(prefix="dim_nested_") as work_root:
-            prepared = _prepare_archive(
-                embedded_archive_path,
-                work_root,
-                self.daz_folders,
-                self.enable_template_detection,
-                self._cancelled,
-                _ExtractionBudget(),
-            )
-            transaction = _FileTransaction(self.conflict_policy)
-            transaction.add_tree(
-                prepared.content_root,
-                content_dir,
-                self._cancelled,
-                containment_root=_content_containment_root(content_dir),
-            )
-            transaction.commit(self._cancelled)
-            transaction.finalize()
-
-    def _extractRelevantContent(self, directory, base_paths, content_dir):
-        del base_paths
-        analysis = _scan_extracted_tree(
-            directory, self.daz_folders, self._cancelled
-        )
-        if not analysis.content_files:
-            raise ExtractionError("No recognized DAZ main folders found.")
-        with tempfile.TemporaryDirectory(prefix="dim_content_") as work_root:
-            stage = os.path.join(work_root, "content")
-            _stage_content(analysis, stage, self._cancelled)
-            transaction = _FileTransaction(self.conflict_policy)
-            transaction.add_tree(
-                stage,
-                content_dir,
-                self._cancelled,
-                containment_root=_content_containment_root(content_dir),
-            )
-            transaction.commit(self._cancelled)
-            transaction.finalize()
+            self.import_plan.cleanup()

@@ -3,7 +3,7 @@ import uuid
 from typing import Optional, Any
 
 from naming_utils import DIM_PREFIX_PATTERN
-from session import Session, Build
+from session import Build, MAX_BUILDS, SYNCED_BUILD_FIELDS, Session
 from utils import (
     create_build_folder,
     delete_build_folder,
@@ -12,9 +12,6 @@ from utils import (
 from logger_utils import get_logger
 
 log = get_logger(__name__)
-
-MAX_BUILDS = 99
-_SYNCED_FIELDS = ['store', 'product_name', 'prefix', 'sku', 'tags', 'image_path']
 
 
 def create_build(session: Session) -> Build:
@@ -29,30 +26,13 @@ def create_build(session: Session) -> Build:
     
     build_id = f"build_{session.next_build_number:03d}"
     folder_name = f"Build{session.next_build_number:03d}"
-    build_guid = str(uuid.uuid4())
-    
     build_number = len(session.builds) + 1
-    if build_number > MAX_BUILDS:
-        raise ValueError(f"Package part must be between 1 and {MAX_BUILDS}")
-    
-    if build_number == 1:
-        new_build = Build(
-            id=build_id,
-            folder=folder_name,
-            part=build_number,
-            guid=build_guid,
-            tags="DAZStudio4_5",
-            content_status="empty"
-        )
-    else:
-        new_build = Build(
-            id=build_id,
-            folder=folder_name,
-            part=build_number,
-            guid=build_guid,
-            content_status="empty",
-            overrides={}
-        )
+    new_build = Build(
+        id=build_id,
+        folder=folder_name,
+        part=build_number,
+        guid=str(uuid.uuid4()),
+    )
     
     create_build_folder(folder_name)
     session.builds.append(new_build)
@@ -65,14 +45,24 @@ def create_build(session: Session) -> Build:
     return new_build
 
 
+def _parent_build(session: Session) -> Optional[Build]:
+    return next((build for build in session.builds if build.part == 1), None)
+
+
+def _promote_to_parent(build: Build, previous_parent: Build) -> None:
+    for field_name in SYNCED_BUILD_FIELDS:
+        value = build.overrides.get(
+            field_name, getattr(previous_parent, field_name)
+        )
+        setattr(build, field_name, value)
+    build.overrides.clear()
+
+
 def delete_build(session: Session, build_id: str) -> Session:
-    build_to_delete = None
-    for build in session.builds:
-        if build.id == build_id:
-            build_to_delete = build
-            break
-    
-    if not build_to_delete:
+    build_to_delete = next(
+        (build for build in session.builds if build.id == build_id), None
+    )
+    if build_to_delete is None:
         return session
     
     delete_build_folder(build_to_delete.folder)
@@ -86,14 +76,7 @@ def delete_build(session: Session, build_id: str) -> Session:
     
     if build_to_delete.part == 1:
         new_part_1 = session.builds[0]
-        
-        for field_name in ['store', 'product_name', 'prefix', 'sku', 'tags', 'image_path']:
-            if field_name in new_part_1.overrides:
-                setattr(new_part_1, field_name, new_part_1.overrides[field_name])
-            else:
-                setattr(new_part_1, field_name, getattr(build_to_delete, field_name))
-        
-        new_part_1.overrides = {}
+        _promote_to_parent(new_part_1, build_to_delete)
     
     for i, build in enumerate(session.builds, start=1):
         build.part = i
@@ -109,25 +92,18 @@ def sync_to_children(session: Session, field: Optional[str] = None) -> None:
     if not session.builds:
         return
     
-    synced_fields = _SYNCED_FIELDS
     if field:
-        fields_to_sync = [field] if field in synced_fields else []
+        fields_to_sync = (field,) if field in SYNCED_BUILD_FIELDS else ()
     else:
-        fields_to_sync = synced_fields
+        fields_to_sync = SYNCED_BUILD_FIELDS
     
     for build in session.builds[1:]:
         for field_name in fields_to_sync:
-            if field_name in build.overrides:
-                del build.overrides[field_name]
+            build.overrides.pop(field_name, None)
 
 
 def sync_from_parent(session: Session, build_id: str) -> None:
-    target_build = None
-    for build in session.builds:
-        if build.id == build_id:
-            target_build = build
-            break
-    
+    target_build = next((build for build in session.builds if build.id == build_id), None)
     if not target_build or target_build.part == 1:
         return
     
@@ -141,17 +117,14 @@ def get_effective_value(session: Session, build: Build, field: str) -> Any:
     if field in build.overrides:
         return build.overrides[field]
     
-    if session.builds:
-        part_1 = next((b for b in session.builds if getattr(b, "part", None) == 1), None)
-        if part_1 is not None:
-            return getattr(part_1, field, "")
+    parent = _parent_build(session)
+    if parent is not None:
+        return getattr(parent, field, "")
     
     return ""
 
 
 def get_build_data(session: Session, build: Build) -> dict[str, Any]:
-    synced_fields = _SYNCED_FIELDS
-    
     data = {
         'id': build.id,
         'folder': build.folder,
@@ -160,7 +133,7 @@ def get_build_data(session: Session, build: Build) -> dict[str, Any]:
         'content_status': build.content_status
     }
     
-    for field in synced_fields:
+    for field in SYNCED_BUILD_FIELDS:
         data[field] = get_effective_value(session, build, field)
     
     return data
@@ -187,16 +160,9 @@ def reorder_builds(session: Session, new_order: list[str]) -> None:
     
     if session.builds and old_part_1 and session.builds[0].id != old_part_1.id:
         new_part_1 = session.builds[0]
+        _promote_to_parent(new_part_1, old_part_1)
         
-        for field_name in ['store', 'product_name', 'prefix', 'sku', 'tags', 'image_path']:
-            if field_name in new_part_1.overrides:
-                setattr(new_part_1, field_name, new_part_1.overrides[field_name])
-            else:
-                setattr(new_part_1, field_name, getattr(old_part_1, field_name))
-        
-        new_part_1.overrides = {}
-        
-        for field_name in ['store', 'product_name', 'prefix', 'sku', 'tags', 'image_path']:
+        for field_name in SYNCED_BUILD_FIELDS:
             old_value = getattr(old_part_1, field_name)
             new_value = getattr(new_part_1, field_name)
             if old_value != new_value:
@@ -273,39 +239,31 @@ def validate_build(build: Build, content_dir: str, daz_folders: list[str],
     return "ready"
 
 
-def _get_build1_build(session: Session) -> Optional[Build]:
-    if hasattr(session, "builds") and session.builds:
-        for b in session.builds:
-            if getattr(b, "part", None) == 1:
-                return b
-    return None
-
-
 def set_field_override(session: Session, build: Build, field: str, value: Any) -> None:
-    synced_fields = _SYNCED_FIELDS
-    if field not in synced_fields:
+    if field not in SYNCED_BUILD_FIELDS:
         raise ValueError(f"Unsupported synchronized build field: {field}")
     if not isinstance(value, str):
         raise TypeError(f"Build field '{field}' must be a string")
     
     if build.part == 1:
         setattr(build, field, value)
-    elif field in synced_fields:
-        build1_build = _get_build1_build(session)
-        
-        if build1_build is not None:
-            base_value = getattr(build1_build, field, None)
-        else:
-            log.warning(f"Build 1 not found in session when setting field '{field}' for Build {build.part}. "
-                       f"Using current build's value as fallback.")
-            base_value = getattr(build, field, None)
-        
-        if value == base_value:
-            if field in build.overrides:
-                del build.overrides[field]
-        else:
-            build.overrides[field] = value
+        return
+
+    parent = _parent_build(session)
+    if parent is not None:
+        base_value = getattr(parent, field, None)
     else:
-        setattr(build, field, value)
+        log.warning(
+            "Build 1 not found in session when setting field '%s' for Build %s. "
+            "Using current build's value as fallback.",
+            field,
+            build.part,
+        )
+        base_value = getattr(build, field, None)
+
+    if value == base_value:
+        build.overrides.pop(field, None)
+    else:
+        build.overrides[field] = value
 
 

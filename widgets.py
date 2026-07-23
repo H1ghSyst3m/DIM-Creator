@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout, QFileSystemModel, QListWidget, QListWidgetItem, QCheckBox
 )
 from PySide6.QtCore import (
-    QByteArray, QBuffer, QIODevice, Qt, QThread, Signal, QEasingCurve,
+    QByteArray, QBuffer, QIODevice, Qt, Signal, QEasingCurve,
     QUrl, QTimer
 )
 from PySide6.QtNetwork import (
@@ -125,9 +125,6 @@ class TagSelectionDialog(QDialog):
 
 
 class CustomCompactSpinBox(CompactSpinBox):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-
     def textFromValue(self, value):
         return f"{value:02d}"
 
@@ -142,7 +139,6 @@ class ImageLabel(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.imagePath = ""
-        self._ownedTemp = False
         self.defaultText = "Drop Image Here\nOr Click to Select"
         self.placeholder_image_rel = os.path.join('assets', 'images', 'placeholder', 'imageexport.png')
         self.placeholder_max_px = 96
@@ -215,7 +211,6 @@ class ImageLabel(QLabel):
             self._orig_pixmap = None
             self.setText(self.defaultText)
         self.imagePath = ""
-        self._ownedTemp = False
         self.removeImageButton.hide()
 
     def resetToPlaceholder(self, *, emit=True):
@@ -278,7 +273,6 @@ class ImageLabel(QLabel):
             self.resetToPlaceholder(emit=emit)
             return
         self.imagePath = path
-        self._ownedTemp = False
         self._orig_pixmap = pixmap
         self._is_placeholder = False
         self._apply_scaled_pixmap()
@@ -481,10 +475,6 @@ class ImageLabel(QLabel):
             return True
         except (OSError, ValueError):
             return False
-
-    def _download_url_to_temp(self, url: QUrl):
-        self._load_seq += 1
-        self._download_first_valid([url], self._load_seq)
 
     def _adopt_data_url(self, url: QUrl) -> bool:
         try:
@@ -747,9 +737,6 @@ class FileExplorer(QWidget):
             print(f"Error: {e}")
             log.error(f"Error: {e}")
             QTimer.singleShot(0, self.refresh_view)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
 
     def InvalidFolderInfoBar(self):
         content = "An error has occurred. Please check out logs."
@@ -1595,44 +1582,6 @@ class BuildListWidget(QWidget):
         if not self.session:
             return []
         return [build for build in self.session.builds if build.checked]
-    
-    def setChecked(self, build_id: str, checked: bool):
-        if not self.session:
-            return
-        
-        for build in self.session.builds:
-            if build.id == build_id:
-                build.checked = checked
-                break
-        
-        for i in range(self.listWidget.count()):
-            item = self.listWidget.item(i)
-            if item.data(Qt.ItemDataRole.UserRole) == build_id:
-                row_widget = self.listWidget.itemWidget(item)
-                if row_widget:
-                    checkbox = row_widget.findChild(QCheckBox)
-                    if checkbox:
-                        checkbox.blockSignals(True)
-                        checkbox.setChecked(checked)
-                        checkbox.blockSignals(False)
-                break
-    
-    def clearAllChecks(self):
-        if not self.session:
-            return
-        
-        for build in self.session.builds:
-            build.checked = False
-        
-        for i in range(self.listWidget.count()):
-            item = self.listWidget.item(i)
-            row_widget = self.listWidget.itemWidget(item)
-            if row_widget:
-                checkbox = row_widget.findChild(QCheckBox)
-                if checkbox:
-                    checkbox.blockSignals(True)
-                    checkbox.setChecked(False)
-                    checkbox.blockSignals(False)
     
     def onAddBuild(self):
         if not self.session or not self._can_mutate():

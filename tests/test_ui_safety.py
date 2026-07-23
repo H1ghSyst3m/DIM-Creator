@@ -22,8 +22,10 @@ from extraction_utils import (
     ContentExtractionWorker,
     ExtractionResult,
     ExtractionRollbackError,
+    plan_archive_import,
 )
 from operation_state import OperationState
+from session import Build, create_default_session
 from utils import (
     has_reparse_component,
     move_to_trash,
@@ -168,13 +170,11 @@ class OperationStateTests(unittest.TestCase):
 
     def test_session_save_failure_blocks_close(self):
         states = []
-        progress = SimpleNamespace(hide=lambda: None, setValue=lambda _value: None)
         gui = SimpleNamespace(
             _close_ready=False,
             _runningWorkers=lambda: [],
             hasUserMadeChanges=lambda: False,
             _setOperationState=states.append,
-            progress_ring=progress,
             saveSettings=lambda: None,
             saveSession=lambda: False,
         )
@@ -358,6 +358,123 @@ class OperationStateTests(unittest.TestCase):
                     expected,
                 )
 
+    def test_extraction_result_adds_new_build_before_single_revalidation(self):
+        session = create_default_session()
+        new_build = Build(
+            id="build_002",
+            folder="Build002",
+            part=2,
+            guid="00000000-0000-0000-0000-000000000002",
+        )
+        calls = []
+        transaction = SimpleNamespace(
+            finalize=lambda: calls.append("finalize"),
+            rollback=lambda: calls.append("rollback"),
+            rollback_pending=False,
+        )
+        result = ExtractionResult(
+            "success",
+            modified_builds=["Build002"],
+            new_builds=[new_build.to_dict()],
+            next_build_number=3,
+            _transaction=transaction,
+        )
+        gui = SimpleNamespace(
+            session=session,
+            current_build=session.builds[0],
+            _revalidateAllBuildsStatus=lambda: calls.append(
+                ("revalidate", len(gui.session.builds))
+            ),
+            buildListWidget=SimpleNamespace(
+                setSession=lambda value: calls.append(("set-session", value)),
+                refreshList=lambda: calls.append("refresh-list"),
+            ),
+            fileExplorer=SimpleNamespace(
+                refresh_view=lambda: calls.append("refresh-files")
+            ),
+            saveSession=lambda: calls.append("save") or True,
+            showExtractionState=lambda *_args, **_kwargs: None,
+            _extractionSuccessMessage=lambda value: (
+                DIMPackageGUI._extractionSuccessMessage(value)
+            ),
+        )
+
+        with (patch.object(app_module, "show_success"),
+              patch.object(app_module, "show_info")):
+            DIMPackageGUI._onExtractionResult(gui, result)
+
+        self.assertEqual([build.id for build in gui.session.builds], [
+            "build_001", "build_002",
+        ])
+        self.assertEqual(gui.session.next_build_number, 3)
+        self.assertEqual(calls.count(("revalidate", 2)), 1)
+        self.assertLess(calls.index(("revalidate", 2)), calls.index("save"))
+        self.assertIn("finalize", calls)
+        self.assertNotIn("rollback", calls)
+
+    def test_extraction_session_save_failure_restores_session_and_files(self):
+        session = create_default_session()
+        original_build_id = session.builds[0].id
+        new_build = Build(
+            id="build_002",
+            folder="Build002",
+            part=2,
+            guid="00000000-0000-0000-0000-000000000002",
+        )
+        calls = []
+        transaction = SimpleNamespace(
+            finalize=lambda: calls.append("finalize"),
+            rollback=lambda: calls.append("rollback"),
+            rollback_pending=True,
+        )
+        result = ExtractionResult(
+            "success",
+            new_builds=[new_build.to_dict()],
+            next_build_number=3,
+            _transaction=transaction,
+        )
+
+        class BuildList:
+            def setSession(self, value):
+                calls.append(("set-session", len(value.builds)))
+
+            def refreshList(self):
+                calls.append("refresh-list")
+
+            def blockSignals(self, blocked):
+                calls.append(("block", blocked))
+                return False
+
+            def selectBuild(self, build_id):
+                calls.append(("select", build_id))
+
+        gui = SimpleNamespace(
+            session=session,
+            current_build=session.builds[0],
+            _revalidateAllBuildsStatus=lambda: calls.append("revalidate"),
+            buildListWidget=BuildList(),
+            fileExplorer=SimpleNamespace(
+                setRootPath=lambda path: calls.append(("root", path)),
+                refresh_view=lambda: calls.append("refresh-files"),
+            ),
+            saveSession=lambda: False,
+            loadBuildIntoEditor=lambda build: calls.append(("load", build.id)),
+            showExtractionState=lambda *_args, **_kwargs: None,
+            _retryExtractionRollback=lambda value: None,
+        )
+
+        with (
+            patch.object(app_module, "get_build_content_dir", return_value="content"),
+            patch.object(app_module, "show_error"),
+        ):
+            DIMPackageGUI._onExtractionResult(gui, result)
+
+        self.assertEqual([build.id for build in gui.session.builds], [original_build_id])
+        self.assertEqual(gui.current_build.id, original_build_id)
+        self.assertEqual(calls.count("rollback"), 1)
+        self.assertNotIn("finalize", calls)
+        self.assertEqual(result.status, "error")
+
     def test_conflict_decision_reaches_a_running_qthread(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             content = Path(temp_dir) / "Build001" / "Content"
@@ -370,14 +487,16 @@ class OperationStateTests(unittest.TestCase):
             with zipfile.ZipFile(archive, "w") as package:
                 package.writestr("Runtime/existing.txt", b"replacement")
 
+            with patch.object(extraction_module, "MIN_FREE_SPACE_BYTES", 0):
+                plan = plan_archive_import(str(archive), {"Runtime"}, True)
             worker = ContentExtractionWorker(
-                str(archive),
-                {"Runtime"},
+                plan,
                 str(content),
-                True,
                 str(templates),
                 prompt_on_conflicts=True,
             )
+            results = []
+            worker.resultReady.connect(results.append)
 
             class Receiver(QObject):
                 def __init__(self):
@@ -414,8 +533,9 @@ class OperationStateTests(unittest.TestCase):
 
             self.assertEqual(timed_out, [])
             self.assertEqual(len(receiver.conflicts), 1)
-            self.assertEqual(worker.result.status, "success")
-            self.assertEqual(worker.result.modified_builds, [])
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].status, "success")
+            self.assertEqual(results[0].modified_builds, [])
             self.assertEqual(existing.read_bytes(), b"old")
             worker.deleteLater()
 
@@ -483,7 +603,6 @@ class OperationStateTests(unittest.TestCase):
             product_part_input=SimpleNamespace(setValue=lambda value: calls.append(("part", value))),
             generateGUID=lambda: calls.append("guid"),
             support_clean_input=SimpleNamespace(setChecked=lambda value: calls.append(("clean", value))),
-            cleanUpTemporaryImage=lambda: calls.append("abort"),
             image_label=SimpleNamespace(resetToPlaceholder=lambda: calls.append("cover-reset")),
             updateZipPreview=lambda: calls.append("preview"),
         )
@@ -553,6 +672,31 @@ class OperationStateTests(unittest.TestCase):
 
         self.assertEqual(combo.currentText(), "Custom Store")
         self.assertEqual(combo.emissions, 0)
+
+    def test_build_selection_persists_the_build_id_directly(self):
+        first = SimpleNamespace(id="build_001", folder="Build001")
+        second = SimpleNamespace(id="build_002", folder="Build002")
+        session = SimpleNamespace(
+            builds=[first, second],
+            last_selected_build_id=first.id,
+        )
+        roots = []
+        loaded = []
+        gui = SimpleNamespace(
+            session=session,
+            current_build=first,
+            canMutateWorkspace=lambda: True,
+            loadBuildIntoEditor=loaded.append,
+            fileExplorer=SimpleNamespace(setRootPath=roots.append),
+            saveSession=lambda: True,
+        )
+
+        DIMPackageGUI.onBuildSelected(gui, second.id)
+
+        self.assertIs(gui.current_build, second)
+        self.assertEqual(session.last_selected_build_id, second.id)
+        self.assertEqual(loaded, [second])
+        self.assertEqual(len(roots), 1)
 
 
 class CoverPersistenceTests(unittest.TestCase):

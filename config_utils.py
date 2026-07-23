@@ -1,4 +1,3 @@
-import copy
 import json
 import os
 import shutil
@@ -104,13 +103,7 @@ def atomic_write_json(path: str | os.PathLike[str], payload: dict[str, Any]) -> 
             raise ConfigError(
                 f"Refusing to overwrite invalid configuration '{target}': invalid version"
             )
-        if (
-            isinstance(existing_version, int)
-            and not isinstance(existing_version, bool)
-            and isinstance(payload_version, int)
-            and not isinstance(payload_version, bool)
-            and existing_version > payload_version
-        ):
+        if existing_version > payload_version:
             raise UnsupportedConfigVersionError(
                 f"Configuration v{existing_version} is newer than v{payload_version}"
             )
@@ -315,7 +308,6 @@ def update_configuration(
     is_dict: bool = True,
 ):
     path = Path(config_path)
-    defaults = copy.deepcopy(default_data)
     raw: dict[str, Any]
     needs_write = False
 
@@ -375,7 +367,7 @@ def update_configuration(
     if not isinstance(raw_data, list):
         raw_data = []
         needs_write = True
-    default_items = defaults.get("data", [])
+    default_items = default_data.get("data", [])
     if not isinstance(default_items, list):
         raise ConfigError("Default configuration data must be a list")
 

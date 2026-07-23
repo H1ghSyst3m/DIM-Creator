@@ -449,6 +449,9 @@ class ContentExtractionWorkerTests(unittest.TestCase):
         self.content_dir = os.path.join(self.temp.name, "Build001", "Content")
         self.template_dir = os.path.join(self.temp.name, "Templates")
         os.makedirs(self.content_dir)
+        self.builds_patch = mock.patch.object(utils, "BUILDS_DIR", self.temp.name)
+        self.builds_patch.start()
+        self.addCleanup(self.builds_patch.stop)
         self.space_patch = mock.patch.object(extraction, "MIN_FREE_SPACE_BYTES", 0)
         self.space_patch.start()
         self.addCleanup(self.space_patch.stop)
@@ -460,23 +463,56 @@ class ContentExtractionWorkerTests(unittest.TestCase):
         *,
         prompt_on_conflicts=False,
     ):
-        return extraction.ContentExtractionWorker(
-            archive,
-            {"Runtime", "People", "data"},
-            self.content_dir,
-            True,
-            self.template_dir,
-            conflict_policy=policy,
-            prompt_on_conflicts=prompt_on_conflicts,
-        )
+        daz_folders = {"Runtime", "People", "data"}
+        plan = extraction.plan_archive_import(archive, daz_folders, True)
+        if plan.is_direct_content:
+            worker = extraction.ContentExtractionWorker(
+                plan,
+                self.content_dir,
+                self.template_dir,
+                conflict_policy=policy,
+                prompt_on_conflicts=prompt_on_conflicts,
+            )
+        else:
+            session = Session(
+                builds=[
+                    Build(
+                        id="build_001",
+                        folder="Build001",
+                        part=1,
+                        guid=str(uuid.uuid4()),
+                    )
+                ],
+                next_build_number=2,
+            )
+            worker = extraction.MultiBuildExtractionWorker(
+                plan,
+                plan.content_archives,
+                plan.template_archives,
+                daz_folders,
+                session,
+                True,
+                self.template_dir,
+                conflict_policy=policy,
+                prompt_on_conflicts=prompt_on_conflicts,
+            )
+        worker.test_results = []
+        worker.resultReady.connect(worker.test_results.append)
+        return worker
 
-    @staticmethod
-    def _signals(worker):
-        complete = []
-        errors = []
-        worker.extractionComplete.connect(lambda: complete.append(True))
-        worker.extractionError.connect(errors.append)
-        return complete, errors
+    def _result(self, worker):
+        self.assertEqual(len(worker.test_results), 1)
+        return worker.test_results[0]
+
+    def _plan_result(self, archive):
+        worker = extraction.ArchivePlanningWorker(
+            archive, {"Runtime", "People", "data"}, True
+        )
+        results = []
+        worker.resultReady.connect(results.append)
+        worker.run()
+        self.assertEqual(len(results), 1)
+        return results[0]
 
     def test_preserves_nested_resource_archive_inside_daz_root(self):
         resource = _zip_bytes({"payload.txt": b"resource"})
@@ -489,13 +525,9 @@ class ContentExtractionWorkerTests(unittest.TestCase):
             },
         )
         worker = self._worker(archive)
-        complete, errors = self._signals(worker)
-
         worker.run()
 
-        self.assertEqual(complete, [True])
-        self.assertEqual(errors, [])
-        self.assertEqual(worker.result.status, "success")
+        self.assertEqual(self._result(worker).status, "success")
         resource_path = os.path.join(
             self.content_dir, "Runtime", "Support", "resource.zip"
         )
@@ -507,24 +539,19 @@ class ContentExtractionWorkerTests(unittest.TestCase):
     def test_rejects_daz_root_name_used_as_a_file(self):
         archive = os.path.join(self.temp.name, "root-file.zip")
         _write_zip(archive, {"Runtime": b"not a directory"})
-        worker = self._worker(archive)
+        result = self._plan_result(archive)
 
-        worker.run()
-
-        self.assertEqual(worker.result.status, "error")
-        self.assertIn("must be a directory", worker.result.message)
+        self.assertEqual(result.status, "error")
+        self.assertIn("must be a directory", result.message)
 
     def test_extracts_one_wrapper_archive_level(self):
         inner = _zip_bytes({"Package/Runtime/file.txt": b"nested content"})
         archive = os.path.join(self.temp.name, "wrapper.zip")
         _write_zip(archive, {"Product_1.zip": inner})
         worker = self._worker(archive)
-        complete, errors = self._signals(worker)
-
         worker.run()
 
-        self.assertEqual(complete, [True])
-        self.assertEqual(errors, [])
+        self.assertEqual(self._result(worker).status, "success")
         with open(os.path.join(self.content_dir, "Runtime", "file.txt"), "rb") as extracted:
             self.assertEqual(extracted.read(), b"nested content")
 
@@ -542,7 +569,7 @@ class ContentExtractionWorkerTests(unittest.TestCase):
 
         worker.run()
 
-        self.assertEqual(worker.result.status, "success")
+        self.assertEqual(self._result(worker).status, "success")
         self.assertTrue(
             os.path.isfile(os.path.join(self.content_dir, "Runtime", "file.txt"))
         )
@@ -553,14 +580,11 @@ class ContentExtractionWorkerTests(unittest.TestCase):
         archive = os.path.join(self.temp.name, "wrapper.zip")
         _write_zip(archive, {"middle.zip": middle})
         worker = self._worker(archive)
-        complete, errors = self._signals(worker)
-
         worker.run()
 
-        self.assertEqual(complete, [])
-        self.assertEqual(len(errors), 1)
-        self.assertEqual(worker.result.status, "error")
-        self.assertIn("nesting", errors[0].casefold())
+        result = self._result(worker)
+        self.assertEqual(result.status, "error")
+        self.assertIn("nesting", result.message.casefold())
         self.assertEqual(os.listdir(self.content_dir), [])
 
     def test_treats_temple_archive_as_content_not_template(self):
@@ -571,9 +595,10 @@ class ContentExtractionWorkerTests(unittest.TestCase):
 
         worker.run()
 
-        self.assertEqual(worker.result.status, "success")
+        result = self._result(worker)
+        self.assertEqual(result.status, "success")
         self.assertTrue(os.path.isfile(os.path.join(self.content_dir, "Runtime", "temple.duf")))
-        self.assertEqual(worker.copiedTemplates, [])
+        self.assertEqual(result.copied_templates, [])
 
     def test_copies_full_word_template_after_success(self):
         template = _zip_bytes({"readme.txt": b"template"})
@@ -589,8 +614,9 @@ class ContentExtractionWorkerTests(unittest.TestCase):
 
         worker.run()
 
-        self.assertEqual(worker.result.status, "success")
-        self.assertEqual(worker.copiedTemplates, ["Product Templates.zip"])
+        result = self._result(worker)
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.copied_templates, ["Product Templates.zip"])
         self.assertTrue(os.path.isfile(os.path.join(self.template_dir, "Product Templates.zip")))
 
     def test_cancel_policy_detects_all_conflicts_before_mutating_destination(self):
@@ -608,13 +634,9 @@ class ContentExtractionWorkerTests(unittest.TestCase):
             },
         )
         worker = self._worker(archive)
-        complete, errors = self._signals(worker)
-
         worker.run()
 
-        self.assertEqual(complete, [])
-        self.assertEqual(len(errors), 1)
-        self.assertEqual(worker.result.status, "cancelled")
+        self.assertEqual(self._result(worker).status, "cancelled")
         with open(existing, "rb") as current:
             self.assertEqual(current.read(), b"old")
         self.assertFalse(os.path.exists(os.path.join(runtime, "new.txt")))
@@ -637,7 +659,7 @@ class ContentExtractionWorkerTests(unittest.TestCase):
 
         worker.run()
 
-        self.assertEqual(worker.result.status, "success")
+        self.assertEqual(self._result(worker).status, "success")
         with open(existing, "rb") as current:
             self.assertEqual(current.read(), b"replacement")
         with open(os.path.join(runtime, "new.txt"), "rb") as current:
@@ -662,11 +684,12 @@ class ContentExtractionWorkerTests(unittest.TestCase):
 
         worker.run()
 
-        self.assertEqual(worker.result.status, "success")
+        result = self._result(worker)
+        self.assertEqual(result.status, "success")
         with open(existing, "rb") as current:
             self.assertEqual(current.read(), b"old")
         self.assertTrue(os.path.isfile(os.path.join(runtime, "new.txt")))
-        self.assertEqual(len(worker.result.skipped_files), 1)
+        self.assertEqual(len(result.skipped_files), 1)
 
     def test_interactive_import_does_not_prompt_without_exact_conflicts(self):
         runtime = os.path.join(self.content_dir, "Runtime")
@@ -681,9 +704,10 @@ class ContentExtractionWorkerTests(unittest.TestCase):
 
         worker.run()
 
-        self.assertEqual(worker.result.status, "success")
+        result = self._result(worker)
+        self.assertEqual(result.status, "success")
         self.assertEqual(prompts, [])
-        self.assertEqual(worker.result.modified_builds, ["Build001"])
+        self.assertEqual(result.modified_builds, ["Build001"])
 
     def test_interactive_import_prompts_once_for_content_and_template_conflicts(self):
         runtime = os.path.join(self.content_dir, "Runtime")
@@ -714,7 +738,8 @@ class ContentExtractionWorkerTests(unittest.TestCase):
         worker.conflictsDetected.connect(skip)
         worker.run()
 
-        self.assertEqual(worker.result.status, "success")
+        result = self._result(worker)
+        self.assertEqual(result.status, "success")
         self.assertEqual(len(prompts), 1)
         self.assertEqual(
             {os.path.abspath(path).casefold() for path in prompts[0]},
@@ -723,9 +748,9 @@ class ContentExtractionWorkerTests(unittest.TestCase):
                 os.path.abspath(existing_template).casefold(),
             },
         )
-        self.assertEqual(worker.result.modified_builds, [])
-        self.assertEqual(worker.result.copied_templates, [])
-        self.assertEqual(len(worker.result.skipped_files), 2)
+        self.assertEqual(result.modified_builds, [])
+        self.assertEqual(result.copied_templates, [])
+        self.assertEqual(len(result.skipped_files), 2)
 
     def test_cancelling_interactive_conflict_wait_rolls_back_without_changes(self):
         runtime = os.path.join(self.content_dir, "Runtime")
@@ -745,7 +770,7 @@ class ContentExtractionWorkerTests(unittest.TestCase):
         worker.conflictsDetected.connect(cancel)
         worker.run()
 
-        self.assertEqual(worker.result.status, "cancelled")
+        self.assertEqual(self._result(worker).status, "cancelled")
         self.assertEqual(len(prompts), 1)
         with open(existing, "rb") as current:
             self.assertEqual(current.read(), b"old")
@@ -755,16 +780,9 @@ class ContentExtractionWorkerTests(unittest.TestCase):
         _write_zip(archive, {"Runtime/file.txt": b"content"})
         worker = self._worker(archive)
         worker._cancelled = lambda: True
-        complete, errors = self._signals(worker)
-        results = []
-        worker.resultReady.connect(results.append)
-
         worker.run()
 
-        self.assertEqual(complete, [])
-        self.assertEqual(errors, ["Extraction cancelled."])
-        self.assertEqual(results, [worker.result])
-        self.assertTrue(worker.result.cancelled)
+        self.assertTrue(self._result(worker).cancelled)
         self.assertEqual(os.listdir(self.content_dir), [])
 
 
@@ -795,18 +813,12 @@ class ArchivePlanningWorkerTests(unittest.TestCase):
 
         planner = extraction.ArchivePlanningWorker(archive, {"Runtime"}, True)
         planning_results = []
-        plans = []
-        errors = []
         planner.resultReady.connect(planning_results.append)
-        planner.planReady.connect(plans.append)
-        planner.planningError.connect(errors.append)
         with mock.patch.object(extraction, "extract_archive_safely", side_effect=counting_extract):
             planner.run()
 
-        self.assertEqual(errors, [])
         self.assertEqual(len(planning_results), 1)
-        self.assertEqual(plans, [planning_results[0].plan])
-        plan = plans[0]
+        plan = planning_results[0].plan
         self.assertTrue(plan.is_direct_content)
         self.assertEqual(len(plan.content_archives), 0)
         self.assertEqual(
@@ -824,11 +836,11 @@ class ArchivePlanningWorkerTests(unittest.TestCase):
         os.makedirs(content_dir)
         worker = extraction.ContentExtractionWorker(
             plan,
-            {"Runtime"},
             content_dir,
-            True,
             template_dir,
         )
+        results = []
+        worker.resultReady.connect(results.append)
         with mock.patch.object(
             extraction,
             "extract_archive_safely",
@@ -836,9 +848,10 @@ class ArchivePlanningWorkerTests(unittest.TestCase):
         ):
             worker.run()
 
-        self.assertEqual(worker.result.status, "success")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].status, "success")
         self.assertTrue(os.path.isfile(os.path.join(content_dir, "Runtime", "file.txt")))
-        self.assertEqual(worker.copiedTemplates, ["Product Template.zip"])
+        self.assertEqual(results[0].copied_templates, ["Product Template.zip"])
         self.assertFalse(os.path.exists(plan.stage_root))
 
     def test_wrapper_plan_returns_unique_relative_paths_without_extracting_parts(self):
@@ -907,18 +920,12 @@ class ArchivePlanningWorkerTests(unittest.TestCase):
         worker = extraction.ArchivePlanningWorker(archive, {"Runtime"}, True)
         worker.isInterruptionRequested = lambda: True
         results = []
-        plans = []
-        errors = []
         worker.resultReady.connect(results.append)
-        worker.planReady.connect(plans.append)
-        worker.planningError.connect(errors.append)
 
         worker.run()
 
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].status, "cancelled")
-        self.assertEqual(plans, [])
-        self.assertEqual(errors, ["Extraction cancelled."])
 
 
 class MultiBuildExtractionWorkerTests(unittest.TestCase):
@@ -935,6 +942,74 @@ class MultiBuildExtractionWorkerTests(unittest.TestCase):
         self.space_patch.start()
         self.addCleanup(self.space_patch.stop)
 
+    def _worker(
+        self,
+        plan,
+        session,
+        *,
+        content_archives=None,
+        template_archives=None,
+        prompt_on_conflicts=False,
+    ):
+        worker = extraction.MultiBuildExtractionWorker(
+            plan,
+            plan.content_archives if content_archives is None else content_archives,
+            plan.template_archives if template_archives is None else template_archives,
+            {"Runtime", "People"},
+            session,
+            True,
+            self.templates_dir,
+            prompt_on_conflicts=prompt_on_conflicts,
+        )
+        worker.test_results = []
+        worker.resultReady.connect(worker.test_results.append)
+        return worker
+
+    def _result(self, worker):
+        self.assertEqual(len(worker.test_results), 1)
+        return worker.test_results[0]
+
+    def test_requires_wrapper_plan_and_typed_selections(self):
+        build = Build(
+            id="build_001",
+            folder="Build001",
+            part=1,
+            guid=str(uuid.uuid4()),
+        )
+        session = Session(builds=[build], next_build_number=2)
+        direct_archive = os.path.join(self.temp.name, "direct.zip")
+        _write_zip(direct_archive, {"Runtime/file.txt": b"content"})
+        direct_plan = extraction.plan_archive_import(
+            direct_archive, {"Runtime"}, True
+        )
+        direct_worker = self._worker(direct_plan, session)
+
+        direct_worker.run()
+
+        direct_result = self._result(direct_worker)
+        self.assertEqual(direct_result.status, "error")
+        self.assertIn("Direct-content", direct_result.message)
+
+        wrapper_archive = os.path.join(self.temp.name, "wrapper-typed.zip")
+        _write_zip(
+            wrapper_archive,
+            {"Product.zip": _zip_bytes({"Runtime/file.txt": b"content"})},
+        )
+        wrapper_plan = extraction.plan_archive_import(
+            wrapper_archive, {"Runtime"}, True
+        )
+        with self.assertRaisesRegex(TypeError, "PlannedEmbeddedArchive"):
+            extraction.MultiBuildExtractionWorker(
+                wrapper_plan,
+                [wrapper_plan.content_archives[0].staged_path],
+                [],
+                {"Runtime"},
+                session,
+                True,
+                self.templates_dir,
+            )
+        wrapper_plan.cleanup()
+
     def test_success_returns_gui_apply_payload_without_mutating_session(self):
         build = Build(
             id="build_001",
@@ -944,43 +1019,30 @@ class MultiBuildExtractionWorkerTests(unittest.TestCase):
             content_status="empty",
         )
         session = Session(builds=[build], next_build_number=2)
-        first = os.path.join(self.temp.name, "Product_1of2.zip")
-        second = os.path.join(self.temp.name, "Product_2of2.zip")
-        _write_zip(first, {"Runtime/one.txt": b"one"})
-        _write_zip(second, {"People/two.txt": b"two"})
-        worker = extraction.MultiBuildExtractionWorker(
-            [second, first],
-            [],
-            {"Runtime", "People"},
-            session,
-            True,
-            self.templates_dir,
+        archive = os.path.join(self.temp.name, "wrapper.zip")
+        _write_zip(
+            archive,
+            {
+                "Product_1of2.zip": _zip_bytes({"Runtime/one.txt": b"one"}),
+                "Product_2of2.zip": _zip_bytes({"People/two.txt": b"two"}),
+            },
         )
-        results = []
-        complete = []
-        errors = []
-        worker.resultReady.connect(results.append)
-        worker.extractionComplete.connect(complete.append)
-        worker.extractionError.connect(errors.append)
+        plan = extraction.plan_archive_import(archive, {"Runtime", "People"}, True)
+        worker = self._worker(plan, session)
 
         worker.run()
 
-        self.assertEqual(errors, [])
-        self.assertEqual(len(results), 1)
-        self.assertIs(results[0], worker.result)
-        self.assertEqual(complete, [["Build001", "Build002"]])
-        self.assertEqual(worker.result.status, "success")
+        result = self._result(worker)
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.modified_builds, ["Build001", "Build002"])
         self.assertEqual(len(session.builds), 1)
         self.assertIs(session.builds[0], build)
         self.assertEqual(session.next_build_number, 2)
         self.assertEqual(build.content_status, "empty")
-        self.assertEqual(len(worker.result.build_updates), 2)
-        existing_update, new_update = worker.result.build_updates
-        self.assertEqual(existing_update.build_id, "build_001")
-        self.assertIsNone(existing_update.new_build)
-        self.assertEqual(new_update.build_id, "build_002")
-        self.assertEqual(new_update.new_build["folder"], "Build002")
-        self.assertEqual(worker.result.next_build_number, 3)
+        self.assertEqual(len(result.new_builds), 1)
+        self.assertEqual(result.new_builds[0]["id"], "build_002")
+        self.assertEqual(result.new_builds[0]["folder"], "Build002")
+        self.assertEqual(result.next_build_number, 3)
         self.assertTrue(
             os.path.isfile(os.path.join(self.builds_dir, "Build001", "Content", "Runtime", "one.txt"))
         )
@@ -997,15 +1059,15 @@ class MultiBuildExtractionWorkerTests(unittest.TestCase):
             content_status="empty",
         )
         session = Session(builds=[build], next_build_number=2)
-        archive = os.path.join(self.temp.name, "Product.zip")
-        _write_zip(archive, {"Runtime/new.txt": b"new"})
-        worker = extraction.MultiBuildExtractionWorker(
-            [archive],
-            [],
-            {"Runtime"},
+        archive = os.path.join(self.temp.name, "wrapper.zip")
+        _write_zip(
+            archive,
+            {"Product.zip": _zip_bytes({"Runtime/new.txt": b"new"})},
+        )
+        plan = extraction.plan_archive_import(archive, {"Runtime"}, True)
+        worker = self._worker(
+            plan,
             session,
-            True,
-            self.templates_dir,
             prompt_on_conflicts=True,
         )
         prompts = []
@@ -1013,9 +1075,10 @@ class MultiBuildExtractionWorkerTests(unittest.TestCase):
 
         worker.run()
 
-        self.assertEqual(worker.result.status, "success")
+        result = self._result(worker)
+        self.assertEqual(result.status, "success")
         self.assertEqual(prompts, [])
-        self.assertEqual(worker.result.modified_builds, ["Build001"])
+        self.assertEqual(result.modified_builds, ["Build001"])
 
     def test_error_emits_one_typed_result_and_leaves_session_unchanged(self):
         build = Build(
@@ -1028,19 +1091,14 @@ class MultiBuildExtractionWorkerTests(unittest.TestCase):
         session = Session(builds=[build], next_build_number=2)
         archive = os.path.join(self.temp.name, "unsafe.zip")
         _write_zip(archive, {"../escape.txt": b"escape"})
-        worker = extraction.MultiBuildExtractionWorker(
-            [archive], [], {"Runtime"}, session, True, self.templates_dir
-        )
         results = []
-        errors = []
-        worker.resultReady.connect(results.append)
-        worker.extractionError.connect(errors.append)
+        planner = extraction.ArchivePlanningWorker(archive, {"Runtime"}, True)
+        planner.resultReady.connect(results.append)
 
-        worker.run()
+        planner.run()
 
         self.assertEqual(len(results), 1)
-        self.assertEqual(len(errors), 1)
-        self.assertEqual(worker.result.status, "error")
+        self.assertEqual(results[0].status, "error")
         self.assertEqual(session.builds, [build])
         self.assertEqual(session.next_build_number, 2)
         self.assertEqual(build.content_status, "empty")
@@ -1072,18 +1130,10 @@ class MultiBuildExtractionWorkerTests(unittest.TestCase):
             plan = extraction.plan_archive_import(
                 archive, {"Runtime", "People"}, True
             )
-            worker = extraction.MultiBuildExtractionWorker(
-                plan.content_archives,
-                plan.template_archives,
-                {"Runtime", "People"},
-                session,
-                True,
-                self.templates_dir,
-                import_plan=plan,
-            )
+            worker = self._worker(plan, session)
             worker.run()
 
-        self.assertEqual(worker.result.status, "success")
+        self.assertEqual(self._result(worker).status, "success")
         self.assertNotIn(os.path.abspath(archive), calls)
         self.assertEqual(len(calls), 3)
         self.assertEqual(len(session.builds), 1)
@@ -1116,19 +1166,15 @@ class MultiBuildExtractionWorkerTests(unittest.TestCase):
             archive, {"Runtime", "People"}, True
         )
         selected_order = tuple(reversed(plan.content_archives))
-        worker = extraction.MultiBuildExtractionWorker(
-            selected_order,
-            plan.template_archives,
-            {"Runtime", "People"},
+        worker = self._worker(
+            plan,
             session,
-            True,
-            self.templates_dir,
-            import_plan=plan,
+            content_archives=selected_order,
         )
 
         worker.run()
 
-        self.assertEqual(worker.result.status, "success")
+        self.assertEqual(self._result(worker).status, "success")
         self.assertTrue(
             os.path.isfile(
                 os.path.join(
@@ -1164,20 +1210,18 @@ class MultiBuildExtractionWorkerTests(unittest.TestCase):
         plan = extraction.plan_archive_import(
             archive, {"Runtime", "People"}, True
         )
-        worker = extraction.MultiBuildExtractionWorker(
-            [plan.content_archives[1]],
-            [],
-            {"Runtime", "People"},
+        worker = self._worker(
+            plan,
             session,
-            True,
-            self.templates_dir,
-            import_plan=plan,
+            content_archives=(plan.content_archives[1],),
+            template_archives=(),
         )
 
         worker.run()
 
-        self.assertEqual(worker.result.status, "error")
-        self.assertIn("missing parts", worker.result.message)
+        result = self._result(worker)
+        self.assertEqual(result.status, "error")
+        self.assertIn("missing parts", result.message)
         self.assertFalse(
             os.path.exists(
                 os.path.join(self.builds_dir, "Build001", "Content", "People")
@@ -1199,20 +1243,21 @@ class MultiBuildExtractionWorkerTests(unittest.TestCase):
         outside = os.path.join(self.temp.name, "outside.zip")
         _write_zip(outside, {"Runtime/outside.txt": b"outside"})
         plan = extraction.plan_archive_import(archive, {"Runtime"}, True)
-        worker = extraction.MultiBuildExtractionWorker(
-            [outside],
-            [],
-            {"Runtime"},
+        outside_selection = extraction.PlannedEmbeddedArchive(
+            "outside.zip", outside
+        )
+        worker = self._worker(
+            plan,
             session,
-            True,
-            self.templates_dir,
-            import_plan=plan,
+            content_archives=(outside_selection,),
+            template_archives=(),
         )
 
         worker.run()
 
-        self.assertEqual(worker.result.status, "error")
-        self.assertIn("not part of the import plan", worker.result.message)
+        result = self._result(worker)
+        self.assertEqual(result.status, "error")
+        self.assertIn("not part of the import plan", result.message)
         self.assertFalse(os.path.exists(plan.stage_root))
         self.assertEqual(session.builds, [build])
 
@@ -1529,20 +1574,15 @@ class TransactionRollbackTests(unittest.TestCase):
             output.write(b"old")
         archive = os.path.join(self.temp.name, "rollback-failure.zip")
         _write_zip(archive, {"Runtime/file.txt": b"new"})
+        plan = extraction.plan_archive_import(archive, {"Runtime"}, True)
         worker = extraction.ContentExtractionWorker(
-            archive,
-            {"Runtime"},
+            plan,
             content_dir,
-            True,
             template_dir,
             conflict_policy=extraction.ConflictPolicy.REPLACE,
         )
         results = []
-        errors = []
-        completed = []
         worker.resultReady.connect(results.append)
-        worker.extractionError.connect(errors.append)
-        worker.extractionComplete.connect(lambda: completed.append(True))
         real_commit = extraction._FileTransaction.commit
         real_replace = extraction.os.replace
 
@@ -1570,15 +1610,14 @@ class TransactionRollbackTests(unittest.TestCase):
             worker.run()
 
         self.assertEqual(len(results), 1)
-        self.assertEqual(len(errors), 1)
-        self.assertEqual(completed, [])
-        self.assertEqual(worker.result.status, "error")
-        self.assertIn("Rollback incomplete", worker.result.message)
-        self.assertTrue(worker.result.rollback_pending)
+        result = results[0]
+        self.assertEqual(result.status, "error")
+        self.assertIn("Rollback incomplete", result.message)
+        self.assertTrue(result.rollback_pending)
 
-        worker.result.rollback()
+        result.rollback()
 
-        self.assertFalse(worker.result.rollback_pending)
+        self.assertFalse(result.rollback_pending)
         with open(target, "rb") as current:
             self.assertEqual(current.read(), b"old")
 
@@ -1591,21 +1630,23 @@ class TransactionRollbackTests(unittest.TestCase):
             output.write(b"old")
         archive = os.path.join(self.temp.name, "replacement.zip")
         _write_zip(archive, {"Runtime/file.txt": b"new"})
+        plan = extraction.plan_archive_import(archive, {"Runtime"}, True)
         worker = extraction.ContentExtractionWorker(
-            archive,
-            {"Runtime"},
+            plan,
             content_dir,
-            True,
             template_dir,
             conflict_policy=extraction.ConflictPolicy.REPLACE,
             defer_finalize=True,
         )
+        results = []
+        worker.resultReady.connect(results.append)
 
         worker.run()
+        self.assertEqual(len(results), 1)
         with open(target, "rb") as current:
             self.assertEqual(current.read(), b"new")
 
-        worker.result.rollback()
+        results[0].rollback()
 
         with open(target, "rb") as current:
             self.assertEqual(current.read(), b"old")

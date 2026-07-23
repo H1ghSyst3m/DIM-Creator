@@ -181,16 +181,15 @@ class PackagingPipelineTests(PackagingTestCase):
             clean_support=True,
         )
 
-        result = pipeline.execute({"progress": lambda *_: None})
+        result = pipeline.execute(progress=lambda *_: None)
 
         self.assertIsInstance(result, PackageResult)
         self.assertEqual(result.status, PackageStatus.SUCCESS)
-        success, message = result
-        self.assertTrue(success)
-        self.assertEqual(message, "Packaging complete.")
+        self.assertTrue(result.success)
+        self.assertEqual(result.message, "Packaging complete.")
         self.assertEqual(source_before, self._snapshot(self.build_dir))
-        self.assertIsNotNone(result.output_path)
-        output_path = Path(result.output_path)
+        self.assertIsNotNone(result.final_path)
+        output_path = Path(result.final_path)
         self.assertGreater(result.file_size, 0)
         self.assertEqual(result.file_size, output_path.stat().st_size)
 
@@ -219,10 +218,10 @@ class PackagingPipelineTests(PackagingTestCase):
         self.assertEqual(names - content_names, {"Manifest.dsx", "Supplement.dsx"})
 
     def test_reserved_daz_prefix_keeps_the_numeric_product_store_idx(self):
-        result = self._pipeline(prefix="IM", store="DAZ 3D").execute({})
+        result = self._pipeline(prefix="IM", store="DAZ 3D").execute()
 
         self.assertTrue(result.success, result.message)
-        with zipfile.ZipFile(result.output_path) as archive:
+        with zipfile.ZipFile(result.final_path) as archive:
             supplement = ElementTree.fromstring(archive.read("Supplement.dsx"))
         self.assertEqual(
             supplement.find("ProductStoreIDX").attrib["VALUE"],
@@ -237,7 +236,7 @@ class PackagingPipelineTests(PackagingTestCase):
 
         pipeline = PackagingPipeline(spec)
         pipeline.seven_zip_path = None
-        result = pipeline.execute({})
+        result = pipeline.execute()
 
         self.assertTrue(result.success)
         with zipfile.ZipFile(final_path) as archive:
@@ -252,7 +251,7 @@ class PackagingPipelineTests(PackagingTestCase):
         pipeline = PackagingPipeline(spec)
         pipeline.seven_zip_path = None
 
-        result = pipeline.execute({})
+        result = pipeline.execute()
 
         self.assertFalse(result.success)
         self.assertIn("not approved", result.message)
@@ -274,7 +273,7 @@ class PackagingPipelineTests(PackagingTestCase):
             "_verify_archive",
             side_effect=verify_then_create_output,
         ):
-            result = pipeline.execute({})
+            result = pipeline.execute()
 
         self.assertFalse(result.success)
         self.assertIn("not approved", result.message)
@@ -294,7 +293,7 @@ class PackagingPipelineTests(PackagingTestCase):
             "_verify_archive",
             side_effect=PackagingError("simulated verification failure"),
         ):
-            result = pipeline.execute({})
+            result = pipeline.execute()
 
         self.assertFalse(result.success)
         self.assertEqual(final_path.read_bytes(), old_bytes)
@@ -310,7 +309,7 @@ class PackagingPipelineTests(PackagingTestCase):
         pipeline.seven_zip_path = None
 
         with mock.patch("packaging_utils.os.replace", side_effect=PermissionError("locked")):
-            result = pipeline.execute({})
+            result = pipeline.execute()
 
         self.assertFalse(result.success)
         self.assertEqual(final_path.read_bytes(), old_bytes)
@@ -320,7 +319,7 @@ class PackagingPipelineTests(PackagingTestCase):
         unsafe_destination.mkdir()
         pipeline = self._pipeline(destination_folder=str(unsafe_destination))
 
-        result = pipeline.execute({})
+        result = pipeline.execute()
 
         self.assertFalse(result.success)
         self.assertIn("inside the build directory", result.message)
@@ -342,7 +341,7 @@ class PackagingPipelineTests(PackagingTestCase):
                     destination_folder=str(unsafe_destination)
                 )
 
-                result = pipeline.execute({})
+                result = pipeline.execute()
 
                 self.assertFalse(result.success)
                 self.assertIn("inside the build directory", result.message)
@@ -367,7 +366,7 @@ class PackagingPipelineTests(PackagingTestCase):
             "_path_is_link_or_reparse",
             side_effect=mark_build_as_reparse,
         ):
-            result = self._pipeline().execute({})
+            result = self._pipeline().execute()
 
         self.assertFalse(result.success)
         self.assertIn("link or reparse point", result.message)
@@ -376,7 +375,7 @@ class PackagingPipelineTests(PackagingTestCase):
     def test_non_writable_destination_is_rejected_before_staging(self):
         pipeline = self._pipeline()
         with mock.patch("packaging_utils.os.access", return_value=False):
-            result = pipeline.execute({})
+            result = pipeline.execute()
         self.assertFalse(result.success)
         self.assertIn("not writable", result.message)
         self.assertEqual(list(self.destination.iterdir()), [])
@@ -390,7 +389,7 @@ class PackagingPipelineTests(PackagingTestCase):
         pipeline = PackagingPipeline(spec)
         pipeline.seven_zip_path = None
 
-        result = pipeline.execute({"is_cancelled": lambda: True})
+        result = pipeline.execute(is_cancelled=lambda: True)
 
         self.assertTrue(result.cancelled)
         self.assertEqual(result.status, PackageStatus.CANCELLED)
@@ -411,10 +410,8 @@ class PackagingPipelineTests(PackagingTestCase):
                 cancellation["requested"] = True
 
         result = pipeline.execute(
-            {
-                "progress": progress,
-                "is_cancelled": lambda: cancellation["requested"],
-            }
+            progress=progress,
+            is_cancelled=lambda: cancellation["requested"],
         )
 
         self.assertTrue(result.cancelled)
@@ -430,7 +427,7 @@ class PackagingPipelineTests(PackagingTestCase):
             {"replace_existing": 1},
         ):
             with self.subTest(changes=changes):
-                result = self._pipeline(**changes).execute({})
+                result = self._pipeline(**changes).execute()
                 self.assertFalse(result.success)
         self.assertEqual(list(self.destination.iterdir()), [])
 
@@ -441,7 +438,7 @@ class PackagingPipelineTests(PackagingTestCase):
             (SimpleNamespace(part=1, product_name="Product"), first),
             (SimpleNamespace(part=1, product_name="product"), second),
         ]
-        worker = BatchPackagingWorker(builds, session=None)
+        worker = BatchPackagingWorker(builds)
         self.assertEqual(worker._duplicate_output_indices(), {0, 1})
 
     def test_batch_failure_emits_an_empty_string_for_a_missing_output_path(self):
@@ -451,12 +448,11 @@ class PackagingPipelineTests(PackagingTestCase):
             (SimpleNamespace(part=1, product_name="Product"), first),
             (SimpleNamespace(part=1, product_name="product"), second),
         ]
-        worker = BatchPackagingWorker(builds, session=None)
+        worker = BatchPackagingWorker(builds)
         completed = []
         worker.buildCompleted.connect(lambda *args: completed.append(args))
 
-        with mock.patch("packaging_utils.INTER_BUILD_DELAY_MS", 0):
-            worker.run()
+        worker.run()
 
         self.assertEqual(len(completed), 2)
         self.assertTrue(all(result[4] == "" for result in completed))
@@ -472,10 +468,10 @@ class PackagingPipelineTests(PackagingTestCase):
         pipeline = PackagingPipeline(spec)
         self.assertIsNotNone(pipeline.seven_zip_path)
 
-        result = pipeline.execute({})
+        result = pipeline.execute()
 
         self.assertTrue(result.success, result.message)
-        with zipfile.ZipFile(result.output_path) as archive:
+        with zipfile.ZipFile(result.final_path) as archive:
             manifest = ElementTree.fromstring(archive.read("Manifest.dsx"))
             manifest_names = {
                 element.attrib["VALUE"]

@@ -5,8 +5,22 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-from build_manager import create_build, delete_build, validate_build
-from session import Build, Session, create_default_session
+import build_manager
+from build_manager import (
+    create_build,
+    delete_build,
+    get_effective_value,
+    reorder_builds,
+    validate_build,
+)
+from naming_utils import DIM_PREFIX_PATTERN
+from session import (
+    Build,
+    MAX_BUILDS,
+    SYNCED_BUILD_FIELDS,
+    Session,
+    create_default_session,
+)
 
 
 def make_build(number: int, part: int) -> Build:
@@ -19,6 +33,14 @@ def make_build(number: int, part: int) -> Build:
 
 
 class BuildLifecycleTests(unittest.TestCase):
+    def test_build_limits_and_synchronized_fields_are_shared_with_session(self):
+        self.assertIs(build_manager.SYNCED_BUILD_FIELDS, SYNCED_BUILD_FIELDS)
+        self.assertEqual(build_manager.MAX_BUILDS, MAX_BUILDS)
+
+    def test_prefix_pattern_is_shared_with_naming_utils(self):
+        self.assertIs(build_manager.DIM_PREFIX_PATTERN, DIM_PREFIX_PATTERN)
+        self.assertFalse(hasattr(build_manager, "_PREFIX_RE"))
+
     @patch("build_manager.create_build_folder")
     def test_create_recalculates_stale_next_number(self, create_folder):
         session = create_default_session()
@@ -55,6 +77,40 @@ class BuildLifecycleTests(unittest.TestCase):
         delete_build(session, "build_002")
         self.assertEqual(session.last_selected_build_id, "build_001")
         self.assertEqual(session.next_build_number, 2)
+
+    @patch("build_manager.delete_build_folder")
+    def test_delete_parent_promotes_child_effective_values(self, _):
+        parent = make_build(1, 1)
+        parent.store = "Parent Store"
+        parent.product_name = "Parent Product"
+        child = make_build(2, 2)
+        child.overrides["product_name"] = "Child Product"
+        session = Session(builds=[parent, child])
+
+        delete_build(session, parent.id)
+
+        self.assertEqual(child.part, 1)
+        self.assertEqual(child.store, "Parent Store")
+        self.assertEqual(child.product_name, "Child Product")
+        self.assertEqual(child.overrides, {})
+
+    def test_reorder_preserves_effective_values_for_both_builds(self):
+        parent = make_build(1, 1)
+        parent.store = "Shared Store"
+        parent.product_name = "Parent Product"
+        child = make_build(2, 2)
+        child.overrides["product_name"] = "Child Product"
+        session = Session(builds=[parent, child])
+
+        reorder_builds(session, [child.id, parent.id])
+
+        self.assertEqual(child.product_name, "Child Product")
+        self.assertEqual(child.overrides, {})
+        self.assertEqual(get_effective_value(session, parent, "store"), "Shared Store")
+        self.assertEqual(
+            get_effective_value(session, parent, "product_name"),
+            "Parent Product",
+        )
 
     @patch("build_manager.create_build_folder")
     @patch("build_manager.delete_build_folder")

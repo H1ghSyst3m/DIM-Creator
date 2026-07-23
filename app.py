@@ -14,19 +14,18 @@ if sys.stderr is None:
     sys.stderr = open(os.devnull, "w")
 
 from qfluentwidgets import (
-    setFont, PrimaryPushButton, PushButton, LineEdit, setTheme, Theme,
-    EditableComboBox, CheckBox, InfoBarPosition, ProgressRing, ToolButton,
+    PrimaryPushButton, PushButton, LineEdit, setTheme, Theme,
+    EditableComboBox, CheckBox, InfoBarPosition, ToolButton,
     StateToolTip, DropDownPushButton, RoundMenu, Action
 )
 from qfluentwidgets import FluentIcon as FIF
 from PySide6.QtWidgets import (
     QMessageBox, QApplication, QWidget, QLabel, QDialog,
     QVBoxLayout, QFileDialog, QCompleter, QHBoxLayout,
-    QGraphicsBlurEffect, QStackedLayout, QSizePolicy, QFormLayout,
-    QSpacerItem
+    QSizePolicy, QFormLayout, QSpacerItem
 )
 from PySide6.QtCore import (
-    Qt, QThread, Signal, QSettings, QTimer, QRegularExpression
+    Qt, QSettings, QTimer, QRegularExpression
 )
 from PySide6.QtGui import (
     QIcon, QKeySequence, QIntValidator, QRegularExpressionValidator,
@@ -34,7 +33,7 @@ from PySide6.QtGui import (
 )
 
 from utils import (
-    resource_path, documents_dir, downloads_dir, DOC_MAIN_DIR,
+    resource_path, DOC_MAIN_DIR,
     tooltip_stylesheet, label_stylesheet,
     show_error, show_info, show_success, show_warning,
     ensure_builds_directory_structure, create_build_folder, clean_build_content,
@@ -66,7 +65,8 @@ from settings import SettingsDialog
 from updater import UpdateManager
 from version import APP_VERSION
 from session import (
-    Build, Session, SessionRecoveryError, UnsupportedSessionVersionError,
+    MAX_BUILDS, Build, Session, SessionRecoveryError,
+    UnsupportedSessionVersionError,
     create_default_session, delete_session_artifacts, load_session_result,
     save_session,
 )
@@ -82,8 +82,6 @@ log.info("Application starting...")
 
 settings = QSettings("Syst3mApps", "DIMCreator")
 
-documents_path = documents_dir()
-doc_main_dir = DOC_MAIN_DIR
 logo_path = resource_path(
     os.path.join('assets', 'images', 'logo', 'favicon.ico')
 )
@@ -100,7 +98,7 @@ class DIMPackageGUI(QWidget):
         self._close_poll_timer = QTimer(self)
         self._close_poll_timer.setSingleShot(True)
         self._close_poll_timer.timeout.connect(self._finishDeferredClose)
-        self.doc_main_dir = doc_main_dir
+        self.doc_main_dir = DOC_MAIN_DIR
         (self.storeitems, self.store_prefixes, self.available_tags,
          self.daz_folders) = load_configurations(self.doc_main_dir)
         self.stateTooltip = None
@@ -195,8 +193,8 @@ class DIMPackageGUI(QWidget):
     def _runningWorkers(self):
         workers = []
         for name in (
-            "packaging_worker", "batch_packaging_worker",
-            "archivePlanningWorker", "extractionWorker",
+            "batch_packaging_worker", "archivePlanningWorker",
+            "extractionWorker",
         ):
             worker = getattr(self, name, None)
             if worker is not None and worker.isRunning():
@@ -423,12 +421,6 @@ class DIMPackageGUI(QWidget):
             pass
 
         try:
-            self.progress_ring.hide()
-            self.progress_ring.setValue(0)
-        except Exception:
-            pass
-
-        try:
             self.saveSettings()
         except Exception as exc:
             log.warning("Could not save UI settings during shutdown: %s", exc)
@@ -492,10 +484,13 @@ class DIMPackageGUI(QWidget):
             self._revalidateAllBuildsStatus()
         
         if self.session.builds:
-            if 0 <= self.session.last_selected_build < len(self.session.builds):
-                self.current_build = self.session.builds[self.session.last_selected_build]
-            else:
-                self.current_build = self.session.builds[0]
+            self.current_build = next(
+                (
+                    build for build in self.session.builds
+                    if build.id == self.session.last_selected_build_id
+                ),
+                self.session.builds[0],
+            )
     
     def saveSession(self):
         if not self.session:
@@ -512,10 +507,10 @@ class DIMPackageGUI(QWidget):
     def onBuildSelected(self, build_id: str):
         if not self.canMutateWorkspace():
             return
-        for i, build in enumerate(self.session.builds):
+        for build in self.session.builds:
             if build.id == build_id:
                 self.current_build = build
-                self.session.last_selected_build = i
+                self.session.last_selected_build_id = build.id
                 
                 self.loadBuildIntoEditor(build)
                 
@@ -565,19 +560,21 @@ class DIMPackageGUI(QWidget):
         if not self.canMutateWorkspace():
             return
         if self.current_build:
-            found = False
-            for i, build in enumerate(self.session.builds):
-                if build.id == self.current_build.id:
-                    self.current_build = build
-                    self.session.last_selected_build = i
-                    self.loadBuildIntoEditor(build)
-                    found = True
-                    break
-            
-            if not found and self.session.builds:
+            selected = next(
+                (
+                    build for build in self.session.builds
+                    if build.id == self.current_build.id
+                ),
+                None,
+            )
+            if selected is not None:
+                self.current_build = selected
+                self.session.last_selected_build_id = selected.id
+                self.loadBuildIntoEditor(selected)
+            elif self.session.builds:
                 log.warning(f"Current build {self.current_build.id} not found after reorder, selecting first build")
                 self.current_build = self.session.builds[0]
-                self.session.last_selected_build = 0
+                self.session.last_selected_build_id = self.current_build.id
                 self.loadBuildIntoEditor(self.current_build)
         
         self.saveSession()
@@ -894,12 +891,6 @@ class DIMPackageGUI(QWidget):
         if self.current_build and self.session:
             self.saveBuildFieldChanges()
 
-    def cleanUpTemporaryImage(self):
-        image_label = getattr(self, "image_label", None)
-        abort = getattr(image_label, "_abort_active_download", None)
-        if callable(abort):
-            abort()
-
     def openTagSelectionDialog(self):
         if not self.canMutateWorkspace():
             return
@@ -909,14 +900,6 @@ class DIMPackageGUI(QWidget):
         if dialog.exec() == QDialog.Accepted:
             selected_tags = dialog.getSelectedTags()
             self.product_tags_input.setText(",".join(selected_tags))
-
-    def updateTagsInput(self, tag, checked):
-        current_tags = self.product_tags_input.text().split(',')
-        if checked and tag not in current_tags:
-            current_tags.append(tag)
-        elif not checked and tag in current_tags:
-            current_tags.remove(tag)
-        self.product_tags_input.setText(','.join(current_tags))
 
     def updateSourcePrefixBasedOnStore(self):
         if not self.canMutateWorkspace():
@@ -945,39 +928,6 @@ class DIMPackageGUI(QWidget):
             if hasattr(self, 'zip_preview_edit'):
                 self.zip_preview_edit.setText(self.build_zip_filename())
                 self.zip_preview_edit.setCursorPosition(0)
-        except Exception:
-            pass
-
-    def _setImageBusy(self, busy: bool, text: str = "Processing…", percent: int | None = None):
-        try:
-            if busy:
-                self.progress_ring.setValue(0)
-
-                if text:
-                    self._overlay_text.setText(text)
-                if percent is not None:
-                    self.progress_ring.setValue(max(0, min(100, percent)))
-
-                eff = QGraphicsBlurEffect(self.image_label)
-                eff.setBlurRadius(12)
-                self._current_blur = eff
-                self.image_label.setGraphicsEffect(eff)
-
-                self._image_overlay.show()
-                self._image_overlay.raise_()
-            else:
-                self._image_overlay.hide()
-
-                eff = getattr(self, "_current_blur", None)
-                if eff is not None:
-                    self.image_label.setGraphicsEffect(None)
-                    try:
-                        eff.deleteLater()
-                    except Exception:
-                        pass
-                    self._current_blur = None
-
-                self.progress_ring.setValue(0)
         except Exception:
             pass
 
@@ -1229,41 +1179,11 @@ class DIMPackageGUI(QWidget):
         right.setContentsMargins(0, 0, 0, 0)
         right.setSpacing(10)
 
-        image_container = QWidget(right_wrap)
-        stack = QStackedLayout(image_container)
-        stack.setStackingMode(QStackedLayout.StackingMode.StackAll)
-
-        self.image_label = ImageLabel(image_container)
+        self.image_label = ImageLabel(right_wrap)
         self.image_label.setToolTip("Drop an image here or click to select an image file.")
         self.image_label.setMinimumSize(300, 320)
         self.image_label.setMaximumWidth(400)
-        stack.addWidget(self.image_label)
-
-        self._image_overlay = QWidget(image_container)
-        self._image_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self._image_overlay.setStyleSheet("background: transparent;")
-        ov = QVBoxLayout(self._image_overlay)
-        ov.setContentsMargins(0, 0, 0, 0)
-        ov.setAlignment(Qt.AlignCenter)
-
-        self.progress_ring = ProgressRing(self._image_overlay)
-        self.progress_ring.setFixedSize(70, 70)
-        self.progress_ring.setTextVisible(True)
-        self.progress_ring.setValue(0)
-        setFont(self.progress_ring, fontSize=13)
-
-        self._overlay_text = QLabel("Working…", self._image_overlay)
-        self._overlay_text.setStyleSheet("color: white; font-size: 10pt;")
-        self._overlay_text.setAlignment(Qt.AlignHCenter)
-
-        ov.addWidget(self.progress_ring, 0, Qt.AlignCenter)
-        ov.addSpacing(8)
-        ov.addWidget(self._overlay_text, 0, Qt.AlignCenter)
-
-        stack.addWidget(self._image_overlay)
-        self._image_overlay.hide()
-
-        right.addWidget(image_container, 1)
+        right.addWidget(self.image_label, 1)
         main.addWidget(right_wrap, 0)
 
         util_bar = QHBoxLayout()
@@ -1398,12 +1318,6 @@ class DIMPackageGUI(QWidget):
         if not self.canMutateWorkspace():
             show_info(self, "Busy", "Please wait for the current operation to finish.")
             return
-        if getattr(self, "packaging_worker", None) and self.packaging_worker.isRunning():
-            show_info(self, "Busy", "Cannot clear while packaging is running.")
-            return
-        if getattr(self, "extractionWorker", None) and self.extractionWorker.isRunning():
-            show_info(self, "Busy", "Cannot clear while extraction is running.")
-            return
         reply = QMessageBox.question(
             self,
             "Clear Confirmation",
@@ -1478,7 +1392,6 @@ class DIMPackageGUI(QWidget):
             self.product_part_input.setValue(1)
             self.generateGUID()
             self.support_clean_input.setChecked(True)
-            self.cleanUpTemporaryImage()
             self.image_label.resetToPlaceholder()
             self.updateZipPreview()
             log.info("All data successfully cleared.")
@@ -1674,7 +1587,7 @@ class DIMPackageGUI(QWidget):
             product_name = build_data.get('product_name', '') or "(No name)"
             progress_dialog.addBuildStatus('⏳', f"{part_label} - {product_name}")
 
-        self.batch_packaging_worker = BatchPackagingWorker(build_specs, self.session, parent=self)
+        self.batch_packaging_worker = BatchPackagingWorker(build_specs, parent=self)
         self._setOperationState(OperationState.PACKAGING)
         batch_start_time = time.time()
         self.batch_packaging_worker.overallProgress.connect(
@@ -1699,9 +1612,6 @@ class DIMPackageGUI(QWidget):
                 progress_dialog.accept(),
                 self._showBatchResults(summary, destination_folder, time.time() - batch_start_time)
             )
-        )
-        self.batch_packaging_worker.cancelled.connect(
-            lambda: log.info("Batch packaging cancelled by user")
         )
         progress_dialog.cancelButton2.clicked.connect(
             lambda: self.batch_packaging_worker.requestCancellation()
@@ -1980,17 +1890,15 @@ class DIMPackageGUI(QWidget):
         if self.operation_state is not OperationState.CLOSING:
             self._setOperationState(OperationState.IDLE)
     
-    def _extractDirectly(self, archive_file_path):
+    def _extractDirectly(self, import_plan):
         self._setOperationState(OperationState.EXTRACTING)
         self.showExtractionState(True)
         log.info("Extraction started...")
 
         current_content_dir = get_build_content_dir(self.current_build.folder)
         w = ContentExtractionWorker(
-            archive_file_path,
-            set(self.daz_folders),
+            import_plan,
             current_content_dir,
-            self.enable_template_detection,
             self.template_destination,
             parent=self,
             defer_finalize=True,
@@ -2006,7 +1914,7 @@ class DIMPackageGUI(QWidget):
     
     def _showExtractionDialog(
         self, content_archives, template_archives, ignored_archives, warning,
-        *, import_plan=None, archive_map=None,
+        *, import_plan, archive_map,
     ):
         dialog = ExtractionDialog(
             content_archives,
@@ -2032,16 +1940,15 @@ class DIMPackageGUI(QWidget):
                 self._cancelPendingArchiveImport("No archives were selected.")
                 return
 
-            if archive_map is not None:
-                try:
-                    content_list = [archive_map[path] for path in content_list]
-                    template_list = [archive_map[path] for path in template_list]
-                except KeyError as exc:
-                    self._cancelPendingArchiveImport(
-                        "The archive selection could not be applied."
-                    )
-                    show_error(self, "Archive Selection Error", str(exc))
-                    return
+            try:
+                content_list = [archive_map[path] for path in content_list]
+                template_list = [archive_map[path] for path in template_list]
+            except KeyError as exc:
+                self._cancelPendingArchiveImport(
+                    "The archive selection could not be applied."
+                )
+                show_error(self, "Archive Selection Error", str(exc))
+                return
 
             self._startMultiBuildExtraction(
                 content_list, template_list, import_plan=import_plan
@@ -2051,13 +1958,14 @@ class DIMPackageGUI(QWidget):
             self._cancelPendingArchiveImport()
     
     def _startMultiBuildExtraction(
-        self, content_archives, template_archives, *, import_plan=None,
+        self, content_archives, template_archives, *, import_plan,
     ):
         self._setOperationState(OperationState.EXTRACTING)
         self.showExtractionState(True)
         log.info("Starting multi-build extraction...")
         
         w = MultiBuildExtractionWorker(
+            import_plan,
             content_archives,
             template_archives,
             set(self.daz_folders),
@@ -2065,7 +1973,6 @@ class DIMPackageGUI(QWidget):
             self.enable_template_detection,
             self.template_destination,
             parent=self,
-            import_plan=import_plan,
             defer_finalize=True,
             prompt_on_conflicts=True,
         )
@@ -2123,22 +2030,17 @@ class DIMPackageGUI(QWidget):
             session_snapshot = self.session.to_dict()
             current_build_id = getattr(self.current_build, "id", "")
             try:
-                for update in result.build_updates:
-                    build = next(
-                        (item for item in self.session.builds
-                         if item.id == update.build_id),
-                        None,
-                    )
-                    if build is None and update.new_build is not None:
-                        build = Build.from_dict(update.new_build)
-                        if len(self.session.builds) >= 99:
-                            raise ValueError("A session can contain at most 99 builds")
-                        self.session.builds.append(build)
-                    if build is None:
+                for build_data in result.new_builds:
+                    build = Build.from_dict(build_data)
+                    if any(item.id == build.id for item in self.session.builds):
                         raise ValueError(
-                            f"Extraction returned an unknown build: {update.build_id}"
+                            f"Extraction returned a duplicate build: {build.id}"
                         )
-                    build.content_status = update.content_status
+                    if len(self.session.builds) >= MAX_BUILDS:
+                        raise ValueError(
+                            f"A session can contain at most {MAX_BUILDS} builds"
+                        )
+                    self.session.builds.append(build)
                 if result.next_build_number is not None:
                     self.session.next_build_number = result.next_build_number
                 self._revalidateAllBuildsStatus()

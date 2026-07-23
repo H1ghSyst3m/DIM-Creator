@@ -5,7 +5,6 @@ import subprocess
 import shutil
 import stat
 from pathlib import Path
-from contextlib import contextmanager
 from PySide6.QtCore import QFile, QStandardPaths, Qt
 from qfluentwidgets import InfoBar, InfoBarPosition
 from logger_utils import get_logger
@@ -49,12 +48,6 @@ COVERS_DIR = os.path.join(ASSETS_DIR, "Covers")
 IGNORE_SYSTEM_FILES = {'.DS_Store', 'Thumbs.db', 'desktop.ini', '__MACOSX'}
 
 
-@contextmanager
-def suppress_cmd_window():
-    """Backward-compatible no-op; callers must configure their own process."""
-    yield
-
-
 def hidden_subprocess_kwargs() -> dict:
     """Return per-process flags that keep helper consoles hidden on Windows."""
     if os.name != "nt":
@@ -66,30 +59,6 @@ def hidden_subprocess_kwargs() -> dict:
         "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
         "startupinfo": startupinfo,
     }
-
-
-def get_optimal_workers():
-    logical_cores = os.cpu_count() or 1
-    suggested_workers = max(2, int(logical_cores * 1.5))
-    max_workers_cap = 8
-    return min(suggested_workers, max_workers_cap)
-
-
-def calculate_total_size(directory):
-    total_size = 0
-    for dirpath, dirnames, filenames in os.walk(directory):
-        dirnames[:] = [d for d in dirnames if d not in IGNORE_SYSTEM_FILES]
-        
-        for f in filenames:
-            if f in IGNORE_SYSTEM_FILES:
-                continue
-            fp = os.path.join(dirpath, f)
-            if os.path.isfile(fp) and not os.path.islink(fp):
-                try:
-                    total_size += os.path.getsize(fp)
-                except OSError:
-                    pass
-    return total_size
 
 
 def _trusted_executable(path: str, *, boundary: str | None = None) -> str | None:

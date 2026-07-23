@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import config_utils
 from config_utils import (
     CURRENT_CONFIG_VERSION,
     ConfigError,
@@ -13,9 +14,14 @@ from config_utils import (
     normalize_tag_items,
     update_configuration,
 )
+from naming_utils import DIM_PREFIX_PATTERN
 
 
 class ConfigurationMigrationTests(unittest.TestCase):
+    def test_prefix_pattern_is_shared_with_naming_utils(self):
+        self.assertIs(config_utils.DIM_PREFIX_PATTERN, DIM_PREFIX_PATTERN)
+        self.assertFalse(hasattr(config_utils, "_PREFIX_RE"))
+
     def test_defaults_use_dim_compatible_prefixes_and_content_tags(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             stores, prefixes, tags, _ = load_configurations(temp_dir)

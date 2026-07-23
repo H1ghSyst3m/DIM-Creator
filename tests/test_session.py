@@ -46,17 +46,10 @@ class SessionSchemaTests(unittest.TestCase):
 
         self.assertEqual(session.version, 2)
         self.assertEqual(session.last_selected_build_id, "build_002")
-        self.assertEqual(session.last_selected_build, 1)
         self.assertEqual(session.next_build_number, 3)
+        self.assertFalse(hasattr(session, "last_selected_build"))
         self.assertNotIn("unknown", session.to_dict())
         self.assertNotIn("last_selected_build", session.to_dict())
-
-    def test_compatibility_index_updates_persisted_build_id(self):
-        session = Session(builds=[make_build(1), make_build(2)])
-        session.last_selected_build = 1
-
-        self.assertEqual(session.last_selected_build_id, "build_002")
-        self.assertEqual(session.to_dict()["last_selected_build_id"], "build_002")
 
     def test_unknown_build_fields_are_ignored(self):
         data = make_build(1).to_dict()

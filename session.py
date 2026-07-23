@@ -21,8 +21,8 @@ MAX_SESSION_BACKUPS = 10
 
 _BUILD_ID_RE = re.compile(r"^build_(\d{3,5})$")
 _BUILD_FOLDER_RE = re.compile(r"^Build(\d{3,5})$")
-_SYNCED_FIELDS = frozenset(
-    {"store", "product_name", "prefix", "sku", "tags", "image_path"}
+SYNCED_BUILD_FIELDS = (
+    "store", "product_name", "prefix", "sku", "tags", "image_path"
 )
 _BUILD_FIELDS = frozenset(
     {
@@ -158,7 +158,7 @@ class Build:
             raise SessionError("Build 'overrides' must be an object")
         overrides: dict[str, str] = {}
         for key, value in raw_overrides.items():
-            if key not in _SYNCED_FIELDS:
+            if key not in SYNCED_BUILD_FIELDS:
                 continue
             overrides[key] = _require_string(value, f"build.overrides.{key}")
         normalized["overrides"] = overrides
@@ -187,23 +187,6 @@ class Session:
             self.last_saved = self.created_at
         if self.builds and not self.last_selected_build_id:
             self.last_selected_build_id = self.builds[0].id
-
-    @property
-    def last_selected_build(self) -> int:
-        """Compatibility index for the existing UI; v2 persists the build ID."""
-        for index, build in enumerate(self.builds):
-            if build.id == self.last_selected_build_id:
-                return index
-        return 0
-
-    @last_selected_build.setter
-    def last_selected_build(self, value: int | str) -> None:
-        if isinstance(value, str):
-            if any(build.id == value for build in self.builds):
-                self.last_selected_build_id = value
-            return
-        if isinstance(value, int) and not isinstance(value, bool) and 0 <= value < len(self.builds):
-            self.last_selected_build_id = self.builds[value].id
 
     def recalculate_derived_fields(self) -> None:
         numbers = []
@@ -592,11 +575,6 @@ def load_session_result(path: str) -> SessionLoadResult:
             f"Primary session was missing; restored '{backup_path.name}'",
         )
     return SessionLoadResult(None, "new")
-
-
-def load_session(path: str) -> Optional[Session]:
-    """Compatibility wrapper around the recovery-aware result API."""
-    return load_session_result(path).session
 
 
 def create_default_session() -> Session:

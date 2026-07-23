@@ -15,7 +15,7 @@ from collections import deque
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Dict, Iterable, Optional
+from typing import Callable, Iterable, Optional
 from xml.dom import minidom
 from xml.etree import ElementTree
 from xml.etree.ElementTree import Element, SubElement, tostring
@@ -33,11 +33,10 @@ from naming_utils import (
     validate_dim_prefix,
     validate_dim_sku,
 )
-from utils import WINDOWS_RESERVED_NAMES, find_7z_executable
+from utils import WINDOWS_RESERVED_NAMES, find_7z_executable, hidden_subprocess_kwargs
 
 log = get_logger(__name__)
 
-INTER_BUILD_DELAY_MS = 100
 SEVEN_ZIP_TOTAL_TIMEOUT_SECONDS = 4 * 60 * 60
 SEVEN_ZIP_PROGRESS_TIMEOUT_SECONDS = 5 * 60
 COPY_CHUNK_SIZE = 1024 * 1024
@@ -68,23 +67,13 @@ class PackageStatus(str, Enum):
 class PackageResult:
     status: PackageStatus
     message: str
-    output_path: Optional[str] = None
+    final_path: Optional[str] = None
     file_size: int = 0
     cancelled: bool = False
 
     @property
     def success(self) -> bool:
         return self.status == PackageStatus.SUCCESS
-
-    @property
-    def final_path(self) -> Optional[str]:
-        return self.output_path
-
-    def __iter__(self):
-        """Keep ``success, message = pipeline.execute(...)`` compatible."""
-        yield self.success
-        yield self.message
-
 
 @dataclass(frozen=True)
 class PackageInventoryEntry:
@@ -154,22 +143,6 @@ class PackageInventory:
                 cancel_check=cancel_check,
             )
         )
-
-    @classmethod
-    def from_staging(
-        cls,
-        staging_dir: str | os.PathLike[str],
-        *,
-        cancel_check: Callable[[], bool] | None = None,
-    ) -> PackageInventory:
-        return cls(
-            _inventory_entries(
-                Path(staging_dir),
-                archive_prefix="",
-                cancel_check=cancel_check,
-            )
-        )
-
 
 @dataclass
 class PackageSpec:
@@ -404,20 +377,25 @@ class PackagingPipeline:
         else:
             self.log.info("7-Zip executable not found, using built-in zipfile module.")
 
-    def execute(self, callbacks: Dict[str, Callable[..., Any]]) -> PackageResult:
-        progress_callback = callbacks.get("progress", lambda *args: None)
+    def execute(
+        self,
+        *,
+        progress: Callable[[int, str], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
+    ) -> PackageResult:
+        progress_callback = progress or (lambda _percent, _stage: None)
 
-        def progress(percent: int, stage: str) -> None:
+        def report_progress(percent: int, stage: str) -> None:
             try:
                 progress_callback(percent, stage)
             except Exception as exc:
                 self.log.warning("Packaging progress callback failed: %s", exc)
 
-        self._is_cancelled = callbacks.get("is_cancelled", lambda: False)
+        self._is_cancelled = is_cancelled or (lambda: False)
         final_path: Optional[Path] = None
 
         try:
-            progress(2, "Validating")
+            report_progress(2, "Validating")
             final_path = self._validate_spec()
             source_inventory = self._validate_source_inventory(
                 self.spec.recognized_content_roots
@@ -435,10 +413,10 @@ class PackagingPipeline:
                 staging_content = staging_root / "Content"
                 staging_content.mkdir(parents=True)
 
-                progress(5, "Staging")
-                self._copy_to_staging(source_inventory, staging_root, progress)
+                report_progress(5, "Staging")
+                self._copy_to_staging(source_inventory, staging_root, report_progress)
 
-                progress(12, "Processing Image")
+                report_progress(12, "Processing Image")
                 self._process_image(staging_content)
                 self._check_cancelled()
 
@@ -446,9 +424,9 @@ class PackagingPipeline:
                     staging_content,
                     cancel_check=self._is_cancelled,
                 )
-                progress(16, "Creating Manifest")
+                report_progress(16, "Creating Manifest")
                 self._create_manifest(staging_root, content_inventory)
-                progress(19, "Creating Supplement")
+                report_progress(19, "Creating Supplement")
                 self._create_supplement(staging_root)
                 inventory = content_inventory.with_entries(
                     self._metadata_inventory_entries(staging_root)
@@ -458,26 +436,26 @@ class PackagingPipeline:
 
                 def report_zip_progress(percent: int) -> None:
                     scaled_percent = 20 + int((percent / 100) * 75)
-                    progress(scaled_percent, "Packaging")
+                    report_progress(scaled_percent, "Packaging")
 
                 if self.seven_zip_path:
                     self._zip_with_7z(temp_zip, staging_root, inventory, report_zip_progress)
                 else:
                     self._zip_with_zipfile(temp_zip, inventory, report_zip_progress)
 
-                progress(96, "Verifying")
+                report_progress(96, "Verifying")
                 self._verify_archive(temp_zip, final_path.name, inventory)
                 self._check_cancelled()
                 self._flush_file(temp_zip)
                 file_size = temp_zip.stat().st_size
                 self._publish_archive(temp_zip, final_path)
 
-            progress(100, "Complete")
+            report_progress(100, "Complete")
             self.log.info("DIM package created at: %s", final_path)
             return PackageResult(
                 status=PackageStatus.SUCCESS,
                 message="Packaging complete.",
-                output_path=str(final_path),
+                final_path=str(final_path),
                 file_size=file_size,
             )
         except PackagingCancelled:
@@ -485,7 +463,7 @@ class PackagingPipeline:
             return PackageResult(
                 status=PackageStatus.CANCELLED,
                 message="Cancelled by user",
-                output_path=str(final_path) if final_path else None,
+                final_path=str(final_path) if final_path else None,
                 cancelled=True,
             )
         except PackagingError as exc:
@@ -493,14 +471,14 @@ class PackagingPipeline:
             return PackageResult(
                 status=PackageStatus.FAILED,
                 message=str(exc),
-                output_path=str(final_path) if final_path else None,
+                final_path=str(final_path) if final_path else None,
             )
         except Exception as exc:
             self.log.exception("Packaging failed: %s", exc)
             return PackageResult(
                 status=PackageStatus.FAILED,
                 message=str(exc),
-                output_path=str(final_path) if final_path else None,
+                final_path=str(final_path) if final_path else None,
             )
 
     def validate(
@@ -883,21 +861,13 @@ class PackagingPipeline:
             str(zip_path),
             f"@{list_path}",
         ]
-        process_kwargs: dict[str, Any] = {}
-        if os.name == "nt":
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startupinfo.wShowWindow = subprocess.SW_HIDE
-            process_kwargs["startupinfo"] = startupinfo
-            process_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-
         process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             cwd=staging_root,
             shell=False,
-            **process_kwargs,
+            **hidden_subprocess_kwargs(),
         )
         output_queue: queue.Queue[Optional[bytes]] = queue.Queue()
 
@@ -1079,48 +1049,20 @@ class PackagingPipeline:
             os.fsync(output.fileno())
 
 
-class PackagingWorker(QThread):
-    progress = Signal(int, str)
-    resultReady = Signal(object)
-    finished = Signal(bool, str)
-
-    def __init__(self, spec: PackageSpec, parent=None):
-        super().__init__(parent)
-        self.pipeline = PackagingPipeline(spec)
-        self._cancel_event = threading.Event()
-
-    def requestCancellation(self) -> None:
-        self._cancel_event.set()
-
-    def run(self) -> None:
-        result = self.pipeline.execute(
-            {
-                "progress": self.progress.emit,
-                "is_cancelled": self._cancel_event.is_set,
-            }
-        )
-        self.resultReady.emit(result)
-        self.finished.emit(result.success, result.message)
-
-
 class BatchPackagingWorker(QThread):
     overallProgress = Signal(int, int)
     buildStarted = Signal(int, str, str)
     buildProgress = Signal(int, str)
     buildCompleted = Signal(int, bool, str, int, str)
     allCompleted = Signal(dict)
-    cancelled = Signal()
 
-    def __init__(self, build_specs, session, parent=None):
+    def __init__(self, build_specs, parent=None):
         super().__init__(parent)
         self.build_specs = build_specs
-        self.session = session
         self._cancel_event = threading.Event()
-        self.cancellation_requested = False
         self.log = get_logger(__name__)
 
     def requestCancellation(self) -> None:
-        self.cancellation_requested = True
         self._cancel_event.set()
         self.log.info("Cancellation requested for batch packaging")
 
@@ -1167,13 +1109,7 @@ class BatchPackagingWorker(QThread):
                 break
 
             part_label = f"Build {build.part:02d}"
-            if self.session:
-                from build_manager import get_build_data
-
-                build_data = get_build_data(self.session, build)
-                product_name = build_data.get("product_name", "") or "(No name)"
-            else:
-                product_name = build.product_name or "(No name)"
+            product_name = spec.product_name or "(No name)"
             self.buildStarted.emit(index, part_label, product_name)
 
             if index in duplicate_indices:
@@ -1184,13 +1120,11 @@ class BatchPackagingWorker(QThread):
             else:
                 pipeline = PackagingPipeline(spec)
                 result = pipeline.execute(
-                    {
-                        "progress": lambda percent, stage: self.buildProgress.emit(
-                            percent,
-                            stage,
-                        ),
-                        "is_cancelled": self._cancel_event.is_set,
-                    }
+                    progress=lambda percent, stage: self.buildProgress.emit(
+                        percent,
+                        stage,
+                    ),
+                    is_cancelled=self._cancel_event.is_set,
                 )
 
             self.buildCompleted.emit(
@@ -1198,7 +1132,7 @@ class BatchPackagingWorker(QThread):
                 result.success,
                 result.message,
                 result.file_size,
-                result.output_path or "",
+                result.final_path or "",
             )
             results.append(
                 {
@@ -1206,17 +1140,13 @@ class BatchPackagingWorker(QThread):
                     "success": result.success,
                     "message": result.message,
                     "file_size": result.file_size,
-                    "output_path": result.output_path,
+                    "output_path": result.final_path,
                     "skipped": result.cancelled,
                 }
             )
             self.overallProgress.emit(index + 1, total_builds)
             if result.cancelled:
                 self.requestCancellation()
-            self.msleep(INTER_BUILD_DELAY_MS)
-
-        if self._cancel_event.is_set():
-            self.cancelled.emit()
 
         summary = {
             "results": results,
