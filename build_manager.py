@@ -1,7 +1,8 @@
 import os
-import re
 import uuid
 from typing import Optional, Any
+
+from naming_utils import DIM_PREFIX_PATTERN
 from session import Session, Build
 from utils import (
     create_build_folder,
@@ -13,7 +14,6 @@ from logger_utils import get_logger
 log = get_logger(__name__)
 
 MAX_BUILDS = 99
-_PREFIX_RE = re.compile(r"^[A-Z][A-Z0-9]{0,6}$")
 _SYNCED_FIELDS = ['store', 'product_name', 'prefix', 'sku', 'tags', 'image_path']
 
 
@@ -253,7 +253,7 @@ def validate_build(build: Build, content_dir: str, daz_folders: list[str],
             return "incomplete"
         values[field] = value.strip()
 
-    if _PREFIX_RE.fullmatch(values['prefix']) is None:
+    if DIM_PREFIX_PATTERN.fullmatch(values['prefix']) is None:
         return "incomplete"
     if not values['sku'].isdigit() or not 1 <= int(values['sku']) <= 99999999:
         return "incomplete"

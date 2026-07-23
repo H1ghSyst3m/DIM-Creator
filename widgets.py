@@ -409,9 +409,12 @@ class ImageLabel(QLabel):
         self._active_reply = reply
         self._download_timer.start(self.DOWNLOAD_TIMEOUT_MS)
 
-        length = reply.header(QNetworkRequest.KnownHeaders.ContentLengthHeader)
-        if length is not None and int(length) > self.MAX_IMAGE_BYTES:
-            reply.abort()
+        def _validate_content_length():
+            length = reply.header(QNetworkRequest.KnownHeaders.ContentLengthHeader)
+            if length is not None and int(length) > self.MAX_IMAGE_BYTES:
+                reply.abort()
+
+        reply.metaDataChanged.connect(_validate_content_length)
 
         def _progress(received, _total):
             if received > self.MAX_IMAGE_BYTES:
@@ -478,9 +481,6 @@ class ImageLabel(QLabel):
             return True
         except (OSError, ValueError):
             return False
-
-    def _set_owned_temp_path(self, temp_path: str):
-        self._adopt_local_as_temp(temp_path)
 
     def _download_url_to_temp(self, url: QUrl):
         self._load_seq += 1
@@ -1285,17 +1285,6 @@ class FileExplorer(QWidget):
         if specific_index.isValid() and self.model.canFetchMore(specific_index):
             self.model.fetchMore(specific_index)
         return True
-    
-    def _expandFolders(self, parent_path: str, content_path: str):
-        parent_index = self.model.index(parent_path)
-        if parent_index.isValid():
-            self.treeView.expand(parent_index)
-            
-            content_index = self.model.index(content_path)
-            if content_index.isValid():
-                if self.model.canFetchMore(content_index):
-                    self.model.fetchMore(content_index)
-                self.treeView.expand(content_index)
     
     def reset_model(self):
         current_path = self.current_path

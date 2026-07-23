@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEventLoop, QObject, QTimer, Qt, Slot
+from PySide6.QtCore import QEventLoop, QObject, QTimer, Qt, QUrl, Slot
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 
@@ -640,6 +640,63 @@ class CoverPersistenceTests(unittest.TestCase):
         self.assertEqual(label.MAX_IMAGE_BYTES, 20 * 1024 * 1024)
         self.assertEqual(label.MAX_IMAGE_PIXELS, 40_000_000)
         self.assertEqual(label.DOWNLOAD_TIMEOUT_MS, 15_000)
+        label.deleteLater()
+        self.app.processEvents()
+
+    def test_download_size_is_checked_after_metadata_arrives(self):
+        class SignalStub:
+            def __init__(self):
+                self.callbacks = []
+
+            def connect(self, callback):
+                self.callbacks.append(callback)
+
+            def emit(self, *args):
+                for callback in self.callbacks:
+                    callback(*args)
+
+        class Reply:
+            def __init__(self):
+                self.metaDataChanged = SignalStub()
+                self.downloadProgress = SignalStub()
+                self.finished = SignalStub()
+                self.content_length = ImageLabel.MAX_IMAGE_BYTES + 1
+                self.header_calls = 0
+                self.aborted = False
+
+            def header(self, _header):
+                self.header_calls += 1
+                return self.content_length
+
+            def abort(self):
+                self.aborted = True
+
+            def isFinished(self):
+                return False
+
+        reply = Reply()
+        label = ImageLabel()
+        label._nam = SimpleNamespace(get=lambda _request: reply)
+
+        label._download_first_valid(
+            [QUrl("https://example.invalid/cover.jpg")],
+            label._load_seq,
+        )
+
+        self.assertEqual(reply.header_calls, 0)
+        self.assertFalse(reply.aborted)
+
+        reply.metaDataChanged.emit()
+
+        self.assertEqual(reply.header_calls, 1)
+        self.assertTrue(reply.aborted)
+
+        reply.aborted = False
+        reply.downloadProgress.emit(label.MAX_IMAGE_BYTES + 1, -1)
+        self.assertTrue(reply.aborted)
+
+        label._download_timer.stop()
+        label._active_reply = None
         label.deleteLater()
         self.app.processEvents()
 

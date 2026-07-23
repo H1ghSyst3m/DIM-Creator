@@ -1,5 +1,8 @@
 import unittest
 
+import build_manager
+import config_utils
+import naming_utils
 from naming_utils import (
     DAZ_RESERVED_PREFIXES,
     build_dim_zip_filename,
@@ -16,6 +19,18 @@ from naming_utils import (
 
 
 class NamingUtilsTests(unittest.TestCase):
+    def test_dim_prefix_pattern_is_shared_by_all_validators(self):
+        self.assertIs(
+            config_utils.DIM_PREFIX_PATTERN,
+            naming_utils.DIM_PREFIX_PATTERN,
+        )
+        self.assertIs(
+            build_manager.DIM_PREFIX_PATTERN,
+            naming_utils.DIM_PREFIX_PATTERN,
+        )
+        self.assertFalse(hasattr(config_utils, "_PREFIX_RE"))
+        self.assertFalse(hasattr(build_manager, "_PREFIX_RE"))
+
     def test_product_store_idx_is_only_emitted_for_daz_reserved_sources(self):
         for prefix in DAZ_RESERVED_PREFIXES:
             with self.subTest(prefix=prefix):

@@ -1,7 +1,6 @@
 import copy
 import json
 import os
-import re
 import shutil
 import tempfile
 import uuid
@@ -10,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
 from logger_utils import get_logger
-from naming_utils import DAZ_RESERVED_PREFIXES
+from naming_utils import DAZ_RESERVED_PREFIXES, DIM_PREFIX_PATTERN
 from version import CONFIG_VERSION
 
 
@@ -18,7 +17,6 @@ log = get_logger(__name__)
 
 CURRENT_CONFIG_VERSION = max(CONFIG_VERSION, 2)
 MAX_CONFIG_BACKUPS = 10
-_PREFIX_RE = re.compile(r"^[A-Z][A-Z0-9]{0,6}$")
 _UNSUPPORTED_CONTENT_TAGS = frozenset({"plugin", "software"})
 
 
@@ -31,7 +29,7 @@ class UnsupportedConfigVersionError(ConfigError):
 
 
 def is_valid_dim_prefix(prefix: str) -> bool:
-    return isinstance(prefix, str) and _PREFIX_RE.fullmatch(prefix) is not None
+    return isinstance(prefix, str) and DIM_PREFIX_PATTERN.fullmatch(prefix) is not None
 
 
 def _unique_stamp() -> str:

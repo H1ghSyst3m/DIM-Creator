@@ -1,7 +1,6 @@
 import sys
 import os
 import tempfile
-import shutil
 import stat
 import uuid
 import ctypes
@@ -135,7 +134,6 @@ class DIMPackageGUI(QWidget):
             self, settings, current_version=APP_VERSION, interval_hours=24
         )
         self.updater.schedule_on_startup_if_enabled()
-        self._extractionHadError = False
 
     def loadSettings(self):
         self.last_destination_folder = settings.value(
@@ -1489,47 +1487,11 @@ class DIMPackageGUI(QWidget):
             log.error(f"Failed to clear all data: {e}")
             show_error(self, "Error", "Failed to clear all data. Please check the logs for more details.")
 
-    def contentValidation(self, content_dir):
-        valid = any(os.path.exists(os.path.join(content_dir, folder)) for folder in self.daz_folders)
-        return valid
-
     def process(self):
         if not self.current_build:
             show_info(self, "No Build", "There is no build to package.")
             return
         self._packageBuilds([self.current_build])
-
-    def updateProgress(self, percent: int, message: str):
-        self.progress_ring.setValue(percent)
-        self._setImageBusy(True, f"{message}… {percent}%", percent)
-
-    def onPackagingFinished(self, success: bool, message: str):
-        if success:
-            log.info("Packaging process completed successfully.")
-            self.DIMSuccessfullCreatedInfoBar()
-        else:
-            log.error(f"Packaging process failed: {message}")
-            show_error(
-                self, "Packaging Error",
-                f"An error occurred:<br><small>{message}</small>",
-                Qt.Horizontal, InfoBarPosition.TOP_RIGHT, True, 5000
-            )
-
-        self.resetPackagingState()
-
-    def resetPackagingState(self):
-        try:
-            self._setImageBusy(False)
-        except Exception:
-            pass
-        if self.operation_state is not OperationState.CLOSING:
-            self._setOperationState(OperationState.IDLE)
-        if getattr(self, 'packaging_worker', None):
-            self.packaging_worker.deleteLater()
-            self.packaging_worker = None
-        if getattr(self, 'batch_packaging_worker', None):
-            self.batch_packaging_worker.deleteLater()
-            self.batch_packaging_worker = None
 
     def _hasCheckedBuilds(self):
         if not hasattr(self, 'buildListWidget') or not self.session:
@@ -1867,15 +1829,11 @@ class DIMPackageGUI(QWidget):
             f"{summary['failed']} failed, {summary['skipped']} skipped"
         )
 
-    def DIMSuccessfullCreatedInfoBar(self):
-        show_success(self, "Success", "The DIM has been successfully created and saved.")
-
     def extractArchive(self):
         if not self.canMutateWorkspace():
             show_info(self, "Busy", "Please wait for the current operation to finish.")
             return
 
-        self._extractionHadError = False
         archive_file_path, _ = QFileDialog.getOpenFileName(
             self, "Select Archive File", "", "Archive Files (*.zip *.rar *.7z)"
         )
@@ -1889,7 +1847,6 @@ class DIMPackageGUI(QWidget):
             show_info(self, "Busy", "Please wait for the current operation to finish.")
             return
 
-        self._extractionHadError = False
         log.info("Extraction started from TreeView...")
 
         self._processArchiveExtraction(archive_file_path)
@@ -2288,90 +2245,6 @@ class DIMPackageGUI(QWidget):
             and getattr(self, "_pending_rollback_result", None) is None
         ):
             self._setOperationState(OperationState.IDLE)
-    
-    def onMultiBuildExtractionComplete(self, modified_builds):
-        if not self._extractionHadError:
-            self.showExtractionState(False, "Extraction completed successfully 😆", success=True)
-            log.info(f"Multi-build extraction completed. Modified builds: {modified_builds}")
-            
-            if hasattr(self, '_extraction_temp_dir') and self._extraction_temp_dir:
-                try:
-                    if os.path.isdir(self._extraction_temp_dir):
-                        shutil.rmtree(self._extraction_temp_dir, ignore_errors=True)
-                        log.info(f"Cleaned up extraction temp directory: {self._extraction_temp_dir}")
-                except Exception as e:
-                    log.warning(f"Failed to cleanup temp directory: {e}")
-                finally:
-                    self._extraction_temp_dir = None
-            
-            self.saveSession()
-            
-            self._revalidateAllBuildsStatus()
-            
-            self.buildListWidget.refreshList()
-            
-            self.fileExplorer.refresh_view()
-            
-            worker = self.sender()
-            copied = getattr(worker, "copiedTemplates", None)
-            if copied:
-                for templateName in copied:
-                    show_info(
-                        self, "Template Copied",
-                        f"Template <b>{templateName}</b> copied successfully.",
-                        Qt.Vertical, InfoBarPosition.BOTTOM_RIGHT
-                    )
-            
-            if len(modified_builds) > 0:
-                show_success(
-                    self, "Extraction Complete",
-                    f"Successfully extracted to {len(modified_builds)} build(s).",
-                    Qt.Vertical, InfoBarPosition.BOTTOM_RIGHT
-                )
-
-    def _cleanupExtractionWorker(self):
-        self._finishExtractionWorker()
-
-    def onExtractionComplete(self):
-        if not self._extractionHadError:
-            self.showExtractionState(False, "Extraction completed successfully 😆", success=True)
-            log.info("Extraction Process completed.")
-            self.fileExplorer.refresh_view()
-
-            worker = self.sender()
-            copied = getattr(worker, "copiedTemplates", None)
-            if copied:
-                for templateName in copied:
-                    show_info(
-                        self, "Template Copied",
-                        f"Template <b>{templateName}</b> copied successfully.",
-                        Qt.Vertical, InfoBarPosition.BOTTOM_RIGHT
-                    )
-
-    def onExtractionError(self, message):
-        self._extractionHadError = True
-        log.error(f"Extraction Error: {message}")
-        
-        if hasattr(self, '_extraction_temp_dir') and self._extraction_temp_dir:
-            try:
-                if os.path.isdir(self._extraction_temp_dir):
-                    shutil.rmtree(self._extraction_temp_dir, ignore_errors=True)
-                    log.info(f"Cleaned up extraction temp directory after error")
-            except Exception as e:
-                log.warning(f"Failed to cleanup temp directory: {e}")
-            finally:
-                self._extraction_temp_dir = None
-        
-        if self.stateTooltip:
-            try:
-                self.stateTooltip.close()
-            except Exception:
-                pass
-            self.stateTooltip = None
-        show_error(
-            self, "Extraction failed", message, Qt.Vertical,
-            InfoBarPosition.BOTTOM_RIGHT, True, 3000
-        )
 
     def _close_tip(self, tip_attr):
         tip = getattr(self, tip_attr, None)
