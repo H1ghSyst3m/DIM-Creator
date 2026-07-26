@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.1.0
+
 ### Added
 - Added conflict handling for archive imports. Existing files can now be replaced, skipped, or the whole import can be cancelled.
 - Added automatic recovery for damaged session and configuration files using the latest valid backup.
