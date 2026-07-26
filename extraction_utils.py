@@ -2378,12 +2378,15 @@ class MultiBuildExtractionWorker(QThread):
             raise UnsafeArchiveError("Selected template archive is not part of the import plan.")
 
     def _allocate_builds(self):
+        from session import MAX_BUILDS
         from utils import get_build_content_dir
 
-        if len(self.content_archives) > 99 or len(self._build_snapshots) + sum(
+        if len(self.content_archives) > MAX_BUILDS or len(self._build_snapshots) + sum(
             part not in self.part_to_build for part in range(1, len(self.content_archives) + 1)
-        ) > 99:
-            raise ExtractionError("A session can contain at most 99 builds.")
+        ) > MAX_BUILDS:
+            raise ExtractionError(
+                f"A session can contain at most {MAX_BUILDS} builds."
+            )
 
         used_ids = {build.build_id for build in self._build_snapshots}
         used_folders = {build.folder.casefold() for build in self._build_snapshots}

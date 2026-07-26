@@ -220,6 +220,31 @@ class SessionPersistenceTests(unittest.TestCase):
             self.assertTrue(quarantine.exists())
             self.assertEqual(load_session_result(str(path)).source, "new")
 
+    def test_cleanup_keeps_backups_when_primary_cannot_be_deleted(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "session.json"
+            session = create_default_session()
+            save_session(session, str(path))
+            session.builds[0].product_name = "Changed"
+            save_session(session, str(path))
+            backups = tuple((path.parent / "backups").glob("session_*.json"))
+            real_unlink = Path.unlink
+
+            def fail_primary(candidate, *args, **kwargs):
+                if candidate == path:
+                    raise PermissionError("locked")
+                return real_unlink(candidate, *args, **kwargs)
+
+            with (
+                patch.object(Path, "unlink", autospec=True, side_effect=fail_primary),
+                self.assertRaises(PermissionError),
+            ):
+                delete_session_artifacts(path, include_backups=True)
+
+            self.assertTrue(path.exists())
+            self.assertTrue(backups)
+            self.assertTrue(all(backup.exists() for backup in backups))
+
     def test_corrupt_primary_without_backup_requires_explicit_recovery(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "session.json"

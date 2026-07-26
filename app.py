@@ -2099,8 +2099,7 @@ class DIMPackageGUI(QWidget):
                 rollback_error = None
                 try:
                     result.rollback()
-                except ExtractionRollbackError as rollback_exc:
-                    rollback_error = rollback_exc
+                except ExtractionRollbackError:
                     log.exception("Could not roll back extracted files")
                     rollback_error = self._retryExtractionRollback(result)
                 try:

@@ -236,17 +236,20 @@ class ImageLabel(QLabel):
     def _read_image_bytes(self, data: bytes) -> QImage:
         if not data or len(data) > self.MAX_IMAGE_BYTES:
             return QImage()
-        buffer = QBuffer(self)
-        buffer.setData(QByteArray(data))
-        if not buffer.open(QIODevice.OpenModeFlag.ReadOnly):
-            return QImage()
-        reader = QImageReader(buffer)
-        reader.setDecideFormatFromContent(True)
-        reader.setAutoTransform(True)
-        size = reader.size()
-        if (not size.isValid() or size.width() * size.height() > self.MAX_IMAGE_PIXELS):
-            return QImage()
-        return reader.read()
+        buffer = QBuffer()
+        try:
+            buffer.setData(QByteArray(data))
+            if not buffer.open(QIODevice.OpenModeFlag.ReadOnly):
+                return QImage()
+            reader = QImageReader(buffer)
+            reader.setDecideFormatFromContent(True)
+            reader.setAutoTransform(True)
+            size = reader.size()
+            if (not size.isValid() or size.width() * size.height() > self.MAX_IMAGE_PIXELS):
+                return QImage()
+            return reader.read()
+        finally:
+            buffer.close()
 
     def _persist_image(self, image: QImage) -> str:
         if image.isNull() or image.width() * image.height() > self.MAX_IMAGE_PIXELS:
@@ -405,7 +408,14 @@ class ImageLabel(QLabel):
 
         def _validate_content_length():
             length = reply.header(QNetworkRequest.KnownHeaders.ContentLengthHeader)
-            if length is not None and int(length) > self.MAX_IMAGE_BYTES:
+            if length is None:
+                return
+            try:
+                parsed_length = int(length)
+            except (TypeError, ValueError, OverflowError):
+                reply.abort()
+                return
+            if parsed_length < 0 or parsed_length > self.MAX_IMAGE_BYTES:
                 reply.abort()
 
         reply.metaDataChanged.connect(_validate_content_length)
@@ -509,11 +519,11 @@ class ImageLabel(QLabel):
                     b += '=' * (4 - pad)
                 raw = base64.b64decode(b, validate=True)
             else:
-                raw = QUrl.fromPercentEncoding(data.encode('utf-8'))
-                if not isinstance(raw, (bytes, bytearray)):
-                    raw = bytes(raw)
+                raw = bytes(
+                    QByteArray.fromPercentEncoding(QByteArray(data.encode('utf-8')))
+                )
 
-            image = self._read_image_bytes(bytes(raw))
+            image = self._read_image_bytes(raw)
             if image.isNull():
                 return False
             self._abort_active_download()
@@ -1251,7 +1261,8 @@ class FileExplorer(QWidget):
                 show_info(self, "Folder Created", f"New folder created: {folder_name}")
                 log.info(f"New folder created: {new_folder_path}")
             except OSError as e:
-                show_error(self, "Error", f"Error creating folder {folder_name}.")
+                show_error(self, "Error", f"Error creating folder {folder_name}: {e}")
+                log.error(f"Error creating folder {new_folder_path}: {e}")
     
     def setRootPath(self, path: str):
         if not self._root_is_safe(path):

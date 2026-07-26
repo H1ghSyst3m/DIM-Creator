@@ -902,6 +902,7 @@ class PackagingPipeline:
                 if chunk is None:
                     reader_finished = True
                     continue
+                last_progress = now
                 text = chunk.decode("utf-8", errors="replace")
                 output_tail.extend(part for part in re.split(r"[\r\n]+", text) if part)
                 progress_buffer = (progress_buffer + text)[-512:]
@@ -910,7 +911,6 @@ class PackagingPipeline:
                     percent = max(0, min(100, int(matches[-1].group(1))))
                     if percent > last_percent:
                         progress_callback(percent)
-                        last_progress = now
                         last_percent = percent
                     progress_buffer = progress_buffer[matches[-1].end():]
 
@@ -923,9 +923,9 @@ class PackagingPipeline:
             self._stop_process(process)
             raise
         finally:
+            reader.join(timeout=1)
             if process.stdout:
                 process.stdout.close()
-            reader.join(timeout=1)
             try:
                 list_path.unlink()
             except OSError:

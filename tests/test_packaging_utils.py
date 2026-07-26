@@ -148,6 +148,69 @@ class PackageInventoryTests(PackagingTestCase):
 
 
 class PackagingPipelineTests(PackagingTestCase):
+    def test_7zip_output_refreshes_watchdog_without_duplicate_progress(self):
+        events = []
+
+        class Stdout:
+            def close(self):
+                events.append("close")
+
+        class Process:
+            def __init__(self):
+                self.stdout = Stdout()
+                self._polls = iter((None, None, None, 0, 0))
+
+            def poll(self):
+                return next(self._polls, 0)
+
+            def wait(self):
+                return 0
+
+        class OutputQueue:
+            def __init__(self):
+                self.items = iter((b"10%\n", b"10%\n", b"10%\n", None))
+
+            def get(self, timeout):
+                return next(self.items)
+
+        class ReaderThread:
+            def __init__(self, target, daemon):
+                pass
+
+            def start(self):
+                pass
+
+            def join(self, timeout):
+                events.append("join")
+
+        pipeline = self._pipeline()
+        pipeline.seven_zip_path = "7z"
+        progress = []
+        inventory = SimpleNamespace(archive_members=("Content/People/file.duf",))
+
+        with (
+            mock.patch.object(packaging_utils.subprocess, "Popen", return_value=Process()),
+            mock.patch.object(packaging_utils.queue, "Queue", return_value=OutputQueue()),
+            mock.patch.object(packaging_utils.threading, "Thread", ReaderThread),
+            mock.patch.object(
+                packaging_utils.time,
+                "monotonic",
+                side_effect=(0, 4, 8, 12, 13),
+            ),
+            mock.patch.object(
+                packaging_utils, "SEVEN_ZIP_PROGRESS_TIMEOUT_SECONDS", 5
+            ),
+        ):
+            pipeline._zip_with_7z(
+                self.destination / "package.zip",
+                self.content_dir,
+                inventory,
+                progress.append,
+            )
+
+        self.assertEqual(progress, [10, 100])
+        self.assertEqual(events, ["join", "close"])
+
     def test_public_validation_is_side_effect_free_and_checks_daz_roots(self):
         spec = self._spec()
         source_before = self._snapshot(self.build_dir)

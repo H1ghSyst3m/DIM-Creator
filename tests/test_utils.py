@@ -8,6 +8,7 @@ import utils
 
 
 class ArchiveToolDiscoveryTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Program Files discovery is Windows-only")
     def test_program_files_7zip_is_preferred_to_path(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -41,6 +42,25 @@ class ArchiveToolDiscoveryTests(unittest.TestCase):
                 patch.dict(os.environ, {"PATH": str(root)}),
             ):
                 self.assertIsNone(utils.find_7z_executable())
+
+    def test_explicit_path_below_current_directory_is_allowed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            tool_dir = root / "tools"
+            tool_dir.mkdir()
+            tool = tool_dir / ("UnRAR.exe" if os.name == "nt" else "unrar")
+            tool.write_bytes(b"trusted")
+            if os.name != "nt":
+                tool.chmod(0o755)
+
+            with (
+                patch.object(utils, "_program_files_roots", return_value=[]),
+                patch.object(utils.os, "getcwd", return_value=str(root)),
+                patch.dict(os.environ, {"PATH": str(tool_dir)}),
+            ):
+                discovered = utils.find_unrar_executable()
+
+            self.assertEqual(discovered, os.path.realpath(tool))
 
     def test_relative_and_empty_path_entries_are_ignored(self):
         with tempfile.TemporaryDirectory() as temp_dir:

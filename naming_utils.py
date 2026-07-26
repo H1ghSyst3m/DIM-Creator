@@ -91,10 +91,12 @@ def build_dim_zip_filename(
     sku_formatted = format_dim_sku(sku)
     part_str = f"{validate_dim_part(product_part):02d}"
     name_segment = sanitize_dim_zip_product_name(product_name)
-    filename = f"{prefix_clean}{sku_formatted}-{part_str}_{name_segment}.zip"
-    if len(filename) > 255:
+    fixed_prefix = f"{prefix_clean}{sku_formatted}-{part_str}_"
+    extension = ".zip"
+    max_name_length = 255 - len(fixed_prefix) - len(extension)
+    if max_name_length < 1:
         raise ValueError("DIM package filename exceeds the Windows filename limit.")
-    return filename
+    return f"{fixed_prefix}{name_segment[:max_name_length]}{extension}"
 
 
 def validate_dim_zip_filename(filename: str) -> str:

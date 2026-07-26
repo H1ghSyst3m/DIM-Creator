@@ -1010,6 +1010,33 @@ class MultiBuildExtractionWorkerTests(unittest.TestCase):
             )
         wrapper_plan.cleanup()
 
+    def test_build_allocation_uses_the_shared_session_limit(self):
+        build = Build(
+            id="build_001",
+            folder="Build001",
+            part=1,
+            guid=str(uuid.uuid4()),
+        )
+        session = Session(builds=[build], next_build_number=2)
+        wrapper_archive = os.path.join(self.temp.name, "limited-wrapper.zip")
+        _write_zip(
+            wrapper_archive,
+            {
+                "Product_1of2.zip": _zip_bytes({"Runtime/one.txt": b"one"}),
+                "Product_2of2.zip": _zip_bytes({"Runtime/two.txt": b"two"}),
+            },
+        )
+        plan = extraction.plan_archive_import(wrapper_archive, {"Runtime"}, True)
+        worker = self._worker(plan, session)
+
+        with (
+            mock.patch("session.MAX_BUILDS", 1),
+            self.assertRaisesRegex(extraction.ExtractionError, "at most 1 build"),
+        ):
+            worker._allocate_builds()
+
+        plan.cleanup()
+
     def test_success_returns_gui_apply_payload_without_mutating_session(self):
         build = Build(
             id="build_001",
@@ -1323,7 +1350,11 @@ class TransactionRollbackTests(unittest.TestCase):
                 transaction.add_file(source, target_root)
                 original_planned = transaction._planned
 
-                def race_after_preflight(cancel_check=None):
+                def race_after_preflight(
+                    cancel_check=None,
+                    original_planned=original_planned,
+                    target=target,
+                ):
                     planned = original_planned(cancel_check)
                     with open(target, "wb") as output:
                         output.write(b"racer")
@@ -1360,7 +1391,13 @@ class TransactionRollbackTests(unittest.TestCase):
                 transaction = extraction._FileTransaction(policy)
                 transaction.add_file(source, target_root)
 
-                def copy_then_race(source_path, destination, cancel_check):
+                def copy_then_race(
+                    source_path,
+                    destination,
+                    cancel_check,
+                    real_copy=real_copy,
+                    target=target,
+                ):
                     real_copy(source_path, destination, cancel_check)
                     with open(target, "wb") as output:
                         output.write(b"racer")

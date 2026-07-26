@@ -487,10 +487,10 @@ def delete_session_artifacts(
         ):
             raise OSError(f"Session file is not a regular file: {target}")
 
-    for backup in backups:
-        backup.unlink()
     if target.exists():
         target.unlink()
+    for backup in backups:
+        backup.unlink()
 
 
 def save_session(session: Session, path: str) -> None:

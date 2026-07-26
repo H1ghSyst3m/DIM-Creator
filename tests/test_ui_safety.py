@@ -1135,12 +1135,63 @@ class CoverPersistenceTests(unittest.TestCase):
         self.assertEqual(reply.header_calls, 1)
         self.assertTrue(reply.aborted)
 
+        for invalid_length in ("invalid", -1):
+            with self.subTest(content_length=invalid_length):
+                reply.aborted = False
+                reply.content_length = invalid_length
+                reply.metaDataChanged.emit()
+                self.assertTrue(reply.aborted)
+
         reply.aborted = False
         reply.downloadProgress.emit(label.MAX_IMAGE_BYTES + 1, -1)
         self.assertTrue(reply.aborted)
 
         label._download_timer.stop()
         label._active_reply = None
+        label.deleteLater()
+        self.app.processEvents()
+
+    def test_image_byte_buffer_is_unparented_and_closed(self):
+        buffer = SimpleNamespace(
+            setData=lambda _data: None,
+            open=lambda _mode: True,
+            close=lambda: setattr(buffer, "closed", True),
+            closed=False,
+        )
+        size = SimpleNamespace(isValid=lambda: True, width=lambda: 1, height=lambda: 1)
+        decoded = QImage(1, 1, QImage.Format.Format_RGB32)
+        reader = SimpleNamespace(
+            setDecideFormatFromContent=lambda _enabled: None,
+            setAutoTransform=lambda _enabled: None,
+            size=lambda: size,
+            read=lambda: decoded,
+        )
+        label = SimpleNamespace(MAX_IMAGE_BYTES=100, MAX_IMAGE_PIXELS=100)
+
+        with (
+            patch.object(widgets_module, "QBuffer", return_value=buffer) as qbuffer,
+            patch.object(widgets_module, "QImageReader", return_value=reader),
+        ):
+            result = ImageLabel._read_image_bytes(label, b"image")
+
+        qbuffer.assert_called_once_with()
+        self.assertIs(result, decoded)
+        self.assertTrue(buffer.closed)
+
+    def test_percent_encoded_data_url_preserves_binary_bytes(self):
+        label = ImageLabel()
+        captured = []
+        decoded = QImage(1, 1, QImage.Format.Format_RGB32)
+        label._read_image_bytes = lambda data: captured.append(data) or decoded
+        label._persist_image = lambda _image: "managed.jpg"
+        label._show_image = lambda *_args: None
+
+        adopted = label._adopt_data_url(
+            QUrl("data:image/png,%89PNG%0D%0A%1A%0A")
+        )
+
+        self.assertTrue(adopted)
+        self.assertEqual(captured, [b"\x89PNG\r\n\x1a\n"])
         label.deleteLater()
         self.app.processEvents()
 
@@ -1181,6 +1232,44 @@ class ExplorerContainmentTests(unittest.TestCase):
         self.assertTrue(explorer.treeView.isHidden())
         explorer.deleteLater()
         self.app.processEvents()
+
+    def test_folder_creation_error_includes_path_and_os_error(self):
+        class Dialog:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def exec(self):
+                return True
+
+            def getName(self):
+                return "New Folder"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            index = SimpleNamespace(isValid=lambda: False)
+            explorer = SimpleNamespace(
+                _mutation_allowed=lambda: True,
+                treeView=SimpleNamespace(currentIndex=lambda: index),
+                model=SimpleNamespace(rootPath=lambda: temp_dir),
+                current_path=temp_dir,
+                _checked_path=lambda path, allow_root: path,
+            )
+
+            with (
+                patch.object(widgets_module, "NameEntryDialog", Dialog),
+                patch.object(
+                    widgets_module.os,
+                    "mkdir",
+                    side_effect=PermissionError("access denied"),
+                ),
+                patch.object(widgets_module, "show_error") as show_error,
+                patch.object(widgets_module.log, "error") as log_error,
+            ):
+                FileExplorer.createNewFolder(explorer)
+
+            message = show_error.call_args.args[2]
+            self.assertIn("New Folder", message)
+            self.assertIn("access denied", message)
+            self.assertIn("access denied", log_error.call_args.args[0])
 
     def test_explorer_requires_an_active_build_for_a_nonempty_root(self):
         with tempfile.TemporaryDirectory() as temp_dir:

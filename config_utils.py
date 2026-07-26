@@ -154,12 +154,18 @@ def _load_latest_config_backup(
     backup_dir = path.parent / "backups"
     if not backup_dir.is_dir():
         return None
-    candidates = sorted(
-        backup_dir.glob(f"{path.stem}_*.json"),
-        key=lambda item: item.stat().st_mtime_ns,
-        reverse=True,
-    )
-    for candidate in candidates:
+    candidates: list[tuple[int, Path]] = []
+    try:
+        for candidate in backup_dir.glob(f"{path.stem}_*.json"):
+            try:
+                modified = candidate.stat().st_mtime_ns
+            except OSError:
+                continue
+            candidates.append((modified, candidate))
+    except OSError:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    for _, candidate in candidates:
         try:
             with candidate.open("r", encoding="utf-8") as handle:
                 data = json.load(handle)

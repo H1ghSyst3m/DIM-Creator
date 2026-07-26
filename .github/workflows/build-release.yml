@@ -139,6 +139,8 @@ jobs:
         id: changelog
         shell: bash
         run: |
+          set -euo pipefail
+
           extract_section() {
             awk -v heading="$1" '
             /^[[:space:]]*##[[:space:]]+/ {
@@ -156,6 +158,12 @@ jobs:
           notes="$(extract_section "$GITHUB_REF_NAME")"
           if [[ -z "$notes" ]]; then
             notes="$(extract_section "Unreleased")"
+            if [[ -n "$notes" ]]; then
+              notes="$(printf '%s\n' "$notes" | awk -v heading="$GITHUB_REF_NAME" '
+                NR == 1 { print "## " heading; next }
+                { print }
+              ')"
+            fi
           fi
           {
             echo 'notes<<EOF'

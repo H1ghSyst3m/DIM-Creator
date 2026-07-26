@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import config_utils
 from config_utils import (
@@ -181,6 +182,33 @@ class ConfigurationMigrationTests(unittest.TestCase):
                 json.loads(path.read_text(encoding="utf-8"))["data"],
                 ["CustomTag"],
             )
+
+    def test_backup_recovery_skips_candidate_lost_during_stat(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "product_tags.json"
+            backup_dir = path.parent / "backups"
+            backup_dir.mkdir()
+            available = backup_dir / "product_tags_available.json"
+            unavailable = backup_dir / "product_tags_unavailable.json"
+            payload = {
+                "version": CURRENT_CONFIG_VERSION,
+                "data": ["Recovered"],
+            }
+            available.write_text(json.dumps(payload), encoding="utf-8")
+            unavailable.write_text(json.dumps(payload), encoding="utf-8")
+            real_stat = Path.stat
+
+            def stat_with_race(candidate, *args, **kwargs):
+                if candidate == unavailable:
+                    raise FileNotFoundError(candidate)
+                return real_stat(candidate, *args, **kwargs)
+
+            with patch.object(Path, "stat", autospec=True, side_effect=stat_with_race):
+                recovered = config_utils._load_latest_config_backup(
+                    path, CURRENT_CONFIG_VERSION
+                )
+
+            self.assertEqual(recovered, (available, payload))
 
     def test_future_config_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as temp_dir:

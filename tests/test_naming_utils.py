@@ -50,6 +50,14 @@ class NamingUtilsTests(unittest.TestCase):
             "RE00070127-01_BullBoxersG8MG81MG9.zip",
         )
 
+    def test_dim_zip_filename_truncates_only_an_overlong_product_segment(self):
+        filename = build_dim_zip_filename("LOCAL", "1", 99, "Product" * 100)
+
+        self.assertEqual(len(filename), 255)
+        self.assertTrue(filename.startswith("LOCAL00000001-99_"))
+        self.assertTrue(filename.endswith(".zip"))
+        self.assertEqual(validate_dim_zip_filename(filename), filename)
+
     def test_blank_preview_prefix_uses_the_non_reserved_local_prefix(self):
         self.assertEqual(
             build_dim_zip_filename("", "1", 1, "Local Product"),

@@ -93,20 +93,22 @@ class StoreDataEditor(QWidget):
         self.table.selectRow(target_row)
 
     def loadData(self):
-        if not os.path.exists(self.config_path):
-            log.info("StoreData config not found (will be created on save): %s", self.config_path)
-            return
+        self._load_succeeded = False
         try:
             with open(self.config_path, 'r', encoding="utf-8") as f:
                 data = json.load(f)
             if not isinstance(data, dict) or not isinstance(data.get('data'), list):
                 raise ValueError("Store configuration has an invalid schema")
-            for item in normalize_store_items(data['data']):
+            items = normalize_store_items(data['data'], reject_invalid=True)
+            for item in items:
                 row = self.table.rowCount()
                 self.table.insertRow(row)
                 self.table.setItem(row, 0, QTableWidgetItem(item.get('name', '')))
                 self.table.setItem(row, 1, QTableWidgetItem(item.get('prefix', '')))
+            self._load_succeeded = True
             log.info("Loaded store data from %s", self.config_path)
+        except FileNotFoundError:
+            log.error("Store data config is missing: %s", self.config_path)
         except Exception as e:
             log.error("Failed to load store data from %s: %s", self.config_path, e)
 
@@ -123,6 +125,10 @@ class StoreDataEditor(QWidget):
             self.table.removeRow(row)
 
     def saveData(self):
+        if not self._load_succeeded:
+            raise OSError(
+                f"Store configuration was not loaded; refusing to overwrite {self.config_path}"
+            )
         items = []
         for row in range(self.table.rowCount()):
             name_item = self.table.item(row, 0)
@@ -180,19 +186,21 @@ class SimpleListEditor(QWidget):
         self.loadData()
 
     def loadData(self):
-        if not os.path.exists(self.config_path):
-            log.info("List config not found (will be created on save): %s", self.config_path)
-            return
+        self._load_succeeded = False
         try:
             with open(self.config_path, 'r', encoding="utf-8") as f:
                 data = json.load(f)
             if not isinstance(data, dict) or not isinstance(data.get('data'), list):
                 raise ValueError("List configuration has an invalid schema")
-            for item in data['data']:
-                if not isinstance(item, str):
-                    continue
+            items = data['data']
+            if not all(isinstance(item, str) for item in items):
+                raise ValueError("List configuration entries must be text")
+            for item in items:
                 self.list_widget.addItem(QListWidgetItem(item))
+            self._load_succeeded = True
             log.info("Loaded list data from %s (%d items)", self.config_path, self.list_widget.count())
+        except FileNotFoundError:
+            log.error("List config is missing: %s", self.config_path)
         except Exception as e:
             log.error("Failed to load list data from %s: %s", self.config_path, e)
 
@@ -207,6 +215,10 @@ class SimpleListEditor(QWidget):
             self.list_widget.takeItem(self.list_widget.row(item))
 
     def saveData(self):
+        if not self._load_succeeded:
+            raise OSError(
+                f"List configuration was not loaded; refusing to overwrite {self.config_path}"
+            )
         items = [
             self.list_widget.item(i).text().strip()
             for i in range(self.list_widget.count())

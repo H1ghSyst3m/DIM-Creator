@@ -96,7 +96,7 @@ def _safe_path_directories() -> list[str]:
         if not entry or not os.path.isabs(entry) or not os.path.isdir(entry):
             continue
         resolved = canonical_path(entry)
-        if resolved in seen or is_path_within(resolved, current_directory):
+        if resolved in seen or resolved == current_directory:
             continue
         if has_reparse_point(entry):
             continue
