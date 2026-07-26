@@ -2,7 +2,7 @@ import os
 import json
 from PySide6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QFileDialog, QStackedWidget,
-    QTableWidgetItem, QListWidgetItem, QFrame, QAbstractItemView
+    QTableWidgetItem, QListWidgetItem, QFrame, QAbstractItemView, QMessageBox
 )
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
@@ -12,7 +12,14 @@ from qfluentwidgets import (
 )
 from logger_utils import get_logger
 from utils import tooltip_stylesheet, label_stylesheet
-from version import APP_VERSION, CONFIG_VERSION
+from version import APP_VERSION
+from config_utils import (
+    CURRENT_CONFIG_VERSION,
+    atomic_write_json,
+    normalize_store_items,
+    normalize_tag_items,
+)
+from naming_utils import DAZ_RESERVED_PREFIXES
 
 log = get_logger(__name__)
 
@@ -86,18 +93,22 @@ class StoreDataEditor(QWidget):
         self.table.selectRow(target_row)
 
     def loadData(self):
-        if not os.path.exists(self.config_path):
-            log.info("StoreData config not found (will be created on save): %s", self.config_path)
-            return
+        self._load_succeeded = False
         try:
             with open(self.config_path, 'r', encoding="utf-8") as f:
                 data = json.load(f)
-            for item in data.get('data', []):
+            if not isinstance(data, dict) or not isinstance(data.get('data'), list):
+                raise ValueError("Store configuration has an invalid schema")
+            items = normalize_store_items(data['data'], reject_invalid=True)
+            for item in items:
                 row = self.table.rowCount()
                 self.table.insertRow(row)
                 self.table.setItem(row, 0, QTableWidgetItem(item.get('name', '')))
                 self.table.setItem(row, 1, QTableWidgetItem(item.get('prefix', '')))
+            self._load_succeeded = True
             log.info("Loaded store data from %s", self.config_path)
+        except FileNotFoundError:
+            log.error("Store data config is missing: %s", self.config_path)
         except Exception as e:
             log.error("Failed to load store data from %s: %s", self.config_path, e)
 
@@ -114,6 +125,10 @@ class StoreDataEditor(QWidget):
             self.table.removeRow(row)
 
     def saveData(self):
+        if not self._load_succeeded:
+            raise OSError(
+                f"Store configuration was not loaded; refusing to overwrite {self.config_path}"
+            )
         items = []
         for row in range(self.table.rowCount()):
             name_item = self.table.item(row, 0)
@@ -122,12 +137,26 @@ class StoreDataEditor(QWidget):
             prefix = prefix_item.text().strip() if prefix_item else ""
             if name:
                 items.append({"name": name, "prefix": prefix})
-        try:
-            with open(self.config_path, 'w', encoding="utf-8") as f:
-                json.dump({"version": CONFIG_VERSION, "data": items}, f, indent=4)
-            log.info("Saved store data to %s (%d items)", self.config_path, len(items))
-        except Exception as e:
-            log.error("Failed to save store data to %s: %s", self.config_path, e)
+        items = normalize_store_items(items, reject_invalid=True)
+        reserved = [
+            f"{item['name']} ({item['prefix']})"
+            for item in items
+            if item['prefix'] in DAZ_RESERVED_PREFIXES
+            and item['name'].casefold() != 'daz 3d'
+        ]
+        if reserved:
+            QMessageBox.warning(
+                self,
+                "Reserved Prefix",
+                "The following stores use a DAZ-reserved prefix and may not "
+                "be accepted as third-party packages:\n\n"
+                + "\n".join(reserved),
+            )
+        atomic_write_json(
+            self.config_path,
+            {"version": CURRENT_CONFIG_VERSION, "data": items},
+        )
+        log.info("Saved store data to %s (%d items)", self.config_path, len(items))
 
 
 class SimpleListEditor(QWidget):
@@ -157,15 +186,21 @@ class SimpleListEditor(QWidget):
         self.loadData()
 
     def loadData(self):
-        if not os.path.exists(self.config_path):
-            log.info("List config not found (will be created on save): %s", self.config_path)
-            return
+        self._load_succeeded = False
         try:
             with open(self.config_path, 'r', encoding="utf-8") as f:
                 data = json.load(f)
-            for item in data.get('data', []):
+            if not isinstance(data, dict) or not isinstance(data.get('data'), list):
+                raise ValueError("List configuration has an invalid schema")
+            items = data['data']
+            if not all(isinstance(item, str) for item in items):
+                raise ValueError("List configuration entries must be text")
+            for item in items:
                 self.list_widget.addItem(QListWidgetItem(item))
+            self._load_succeeded = True
             log.info("Loaded list data from %s (%d items)", self.config_path, self.list_widget.count())
+        except FileNotFoundError:
+            log.error("List config is missing: %s", self.config_path)
         except Exception as e:
             log.error("Failed to load list data from %s: %s", self.config_path, e)
 
@@ -180,13 +215,31 @@ class SimpleListEditor(QWidget):
             self.list_widget.takeItem(self.list_widget.row(item))
 
     def saveData(self):
-        items = [self.list_widget.item(i).text() for i in range(self.list_widget.count())]
-        try:
-            with open(self.config_path, 'w', encoding="utf-8") as f:
-                json.dump({"version": CONFIG_VERSION, "data": items}, f, indent=4)
-            log.info("Saved list data to %s (%d items)", self.config_path, len(items))
-        except Exception as e:
-            log.error("Failed to save list data to %s: %s", self.config_path, e)
+        if not self._load_succeeded:
+            raise OSError(
+                f"List configuration was not loaded; refusing to overwrite {self.config_path}"
+            )
+        items = [
+            self.list_widget.item(i).text().strip()
+            for i in range(self.list_widget.count())
+            if self.list_widget.item(i).text().strip()
+        ]
+        if os.path.basename(self.config_path).casefold() == 'product_tags.json':
+            items = normalize_tag_items(items, reject_unsupported=True)
+        else:
+            deduplicated = []
+            seen = set()
+            for item in items:
+                key = item.casefold()
+                if key not in seen:
+                    seen.add(key)
+                    deduplicated.append(item)
+            items = deduplicated
+        atomic_write_json(
+            self.config_path,
+            {"version": CURRENT_CONFIG_VERSION, "data": items},
+        )
+        log.info("Saved list data to %s (%d items)", self.config_path, len(items))
 
 
 class SettingsDialog(QDialog):
@@ -337,8 +390,6 @@ class SettingsDialog(QDialog):
         credits_col.setSpacing(6)
 
         credits_data = [
-            ("patool", "GPLv3", True,
-             "https://github.com/wummel/patool/"),
             ("QFluentWidgets", "GPLv3", True,
              "https://github.com/zhiyiYo/PyQt-Fluent-Widgets/"),
         ]
@@ -396,4 +447,10 @@ class SettingsDialog(QDialog):
             log.info("All settings saved from SettingsDialog")
         except Exception as e:
             log.error("Failed to save settings from SettingsDialog: %s", e)
+            QMessageBox.critical(
+                self,
+                "Settings Save Error",
+                f"The settings could not be saved. No settings window was closed.\n\n{e}",
+            )
+            return
         super().accept()

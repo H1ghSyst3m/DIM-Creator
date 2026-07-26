@@ -2,184 +2,196 @@ name: Build & Release (Windows)
 
 on:
   push:
-    tags: [ "v*" ]
+    tags: ["v*"]
   pull_request:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
-  release:
-    types: [ published ]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  build-windows:
+  test:
     runs-on: windows-latest
-
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          architecture: x64
+
+      - name: Install test dependencies
+        run: python -m pip install --disable-pip-version-check --require-hashes -r requirements-win.lock
+
+      - name: Run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -B -m unittest discover -s tests -v
+
+      - name: Verify dependency consistency
+        run: python -m pip check
+
+      - name: Audit runtime dependencies
+        run: python -m pip_audit -r requirements-win.lock --strict
+
+  build-windows:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Verify APP_VERSION matches the tag
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
           set -euo pipefail
-          TAG="${GITHUB_REF_NAME}"        # e.g. v1.1.1
-          TAG_VER="${TAG#v}"              # remove leading "v"
-
-          FILE="version.py"
-          if [ ! -f "$FILE" ]; then
-            echo "ERROR: $FILE not found"
-            exit 1
-          fi
-
-          APP_VER="$(awk -F\" '/APP_VERSION *=/ {print $2}' "$FILE")"
-
-          echo "Tag version:  $TAG_VER"
-          echo "App version:  $APP_VER"
-
-          if [ -z "$APP_VER" ]; then
-            echo "ERROR: APP_VERSION not found in $FILE"
-            exit 1
-          fi
-
-          if [ "$TAG_VER" != "$APP_VER" ]; then
-            echo "ERROR: Tag version ($TAG_VER) does not match APP_VERSION ($APP_VER)"
-            exit 1
-          fi
+          tag_version="${GITHUB_REF_NAME#v}"
+          app_version="$(awk -F\" '/APP_VERSION *=/ {print $2}' version.py)"
+          test -n "$app_version"
+          test "$tag_version" = "$app_version"
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
+          architecture: x64
 
-      - name: Cache pip
-        uses: actions/cache@v4
+      - name: Install build dependencies
+        run: python -m pip install --disable-pip-version-check --require-hashes -r requirements-win.lock
+
+      - name: Build executable
+        run: pyinstaller --noconfirm --clean DIM-Creator.spec
+
+      - name: Smoke-test executable
+        run: .\dist\DIM-Creator.exe --smoke-test
+
+      - name: Add documentation
+        shell: pwsh
+        run: |
+          Copy-Item README.md dist/README.md -Force
+          Copy-Item LICENSE dist/LICENSE -Force
+
+      - name: Generate SBOM
+        run: python -m pip_audit -r requirements-win.lock --format cyclonedx-json --output dist/sbom.cdx.json
+
+      - name: Package release ZIP
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "dev" }
+          $version = $version -replace '[^0-9A-Za-z._-]', '_'
+          $archive = "dist/DIM-Creator_${version}_win-x64.zip"
+          Compress-Archive -Path dist/DIM-Creator.exe,dist/README.md,dist/LICENSE,dist/sbom.cdx.json -DestinationPath $archive -Force
+
+      - name: Generate SHA-256 checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem dist -File | Where-Object { $_.Extension -in '.exe', '.zip', '.json' } |
+            Sort-Object Name | ForEach-Object {
+              $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$hash  $($_.Name)"
+            } | Set-Content dist/SHA256SUMS.txt -Encoding ascii
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          path: ~\AppData\Local\pip\Cache
-          key: pip-${{ runner.os }}-${{ hashFiles('requirements.txt', 'requirements-build.txt') }}
-          restore-keys: |
-            pip-${{ runner.os }}-
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install -r requirements-build.txt
-
-      - name: Build with PyInstaller
-        shell: bash
-        run: |
-          if [ -f "DIM-Creator.spec" ]; then
-            pyinstaller -y DIM-Creator.spec
-          else
-            pyinstaller app.py \
-              --noconfirm --onefile --noconsole \
-              --name DIM-Creator \
-              --add-data "assets;assets" \
-              --icon "assets/images/logo/favicon.ico" \
-              --hidden-import qfluentwidgets
-          fi
-
-      - name: List outputs (before packaging)
-        shell: pwsh
-        run: |
-          if (Test-Path dist) {
-            Get-ChildItem -Recurse -File dist | Select-Object FullName, Length | Format-Table -AutoSize
-          } else {
-            Write-Host "dist folder not found."
-          }
-
-      - name: Ensure canonical docs in dist
-        shell: pwsh
-        run: |
-          $readme = @("README.md","README.MD","README.txt","README","ReadMe.md") |
-            Where-Object { Test-Path $_ } | Select-Object -First 1
-          if ($readme) { Copy-Item $readme "dist/README.md" -Force }
-
-          $license = @("LICENSE","LICENSE.md","LICENSE.txt","LICENCE","LICENCE.md","LICENCE.txt") |
-            Where-Object { Test-Path $_ } | Select-Object -First 1
-          if ($license) { Copy-Item $license "dist/LICENSE" -Force }
-
-      - name: Package release ZIP (version + docs, sanitized)
-        shell: pwsh
-        run: |
-          $verRaw = $env:GITHUB_REF_NAME; if (-not $verRaw) { $verRaw = "dev" }
-          $ver = ($verRaw -replace '[^0-9A-Za-z._-]', '_')
-
-          if (!(Test-Path "dist/DIM-Creator.exe")) {
-            Get-ChildItem -Recurse -File dist | Select-Object FullName, Length | Format-Table -AutoSize
-            throw "Executable not found at dist/DIM-Creator.exe"
-          }
-
-          $items = @("dist/DIM-Creator.exe")
-          if (Test-Path "dist/README.md") { $items += "dist/README.md" }
-          if (Test-Path "dist/LICENSE")   { $items += "dist/LICENSE"   }
-
-          $zipPath = "dist/DIM-Creator_${ver}_win-x64.zip"
-          if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
-
-          Compress-Archive -Path $items -DestinationPath $zipPath -Force
-
-      - name: Extract changelog section for tag
-        id: changelog
-        shell: bash
-        run: |
-          TAG="${GITHUB_REF_NAME:-dev}"
-          if [ ! -f CHANGELOG.md ]; then
-            echo "notes=" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          NOTES="$(awk -v tag="$TAG" '
-            BEGIN{found=0}
-            /^\s*##[[:space:]]+/ {
-              if(found){exit}
-              if ($0 ~ ("^\\s*##[[:space:]]+" tag "([[:space:]]|$)")) {found=1}
-            }
-            found{print}
-          ' CHANGELOG.md)"
-          NOTES="$(printf "%s\n" "$NOTES" | awk 'BEGIN{p=0} {if($0!~"^\\s*$"){p=1} if(p){print}}' | tac | awk 'BEGIN{p=0} {if($0!~"^\\s*$"){p=1} if(p){print}}' | tac)"
-          {
-            echo 'notes<<EOF'
-            echo "$NOTES"
-            echo 'EOF'
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Upload artifact (EXE)
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: dim-creator-exe
-          path: dist/DIM-Creator.exe
+          name: dim-creator-win-x64
+          path: |
+            dist/DIM-Creator.exe
+            dist/DIM-Creator_*_win-x64.zip
+            dist/sbom.cdx.json
+            dist/SHA256SUMS.txt
+            dist/README.md
+            dist/LICENSE
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload artifact (docs-only, optional)
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: actions/upload-artifact@v4
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build-windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout release notes
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          name: dim-creator-docs
-          path: |
-            dist/README.md
-            dist/LICENSE
-          if-no-files-found: ignore
-          retention-days: 14
+          persist-credentials: false
 
-      - name: Attach to Release with CHANGELOG body (on tags)
-        if: startsWith(github.ref, 'refs/tags/') && steps.changelog.outputs.notes != ''
-        uses: softprops/action-gh-release@v2
+      - name: Download build artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          body: ${{ steps.changelog.outputs.notes }}
-          files: |
-            dist/DIM-Creator.exe
-            dist/*.zip
+          name: dim-creator-win-x64
+          path: dist
 
-      - name: Attach to Release (auto notes) (on tags)
-        if: startsWith(github.ref, 'refs/tags/') && steps.changelog.outputs.notes == ''
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          files: |
+      - name: Extract changelog section
+        id: changelog
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          extract_section() {
+            awk -v heading="$1" '
+            /^[[:space:]]*##[[:space:]]+/ {
+              if (found) exit
+              section=$0
+              sub(/^[[:space:]]*##[[:space:]]+/, "", section)
+              found=(section == heading ||
+                (index(section, heading) == 1 &&
+                 substr(section, length(heading) + 1, 1) ~ /[[:space:]]/))
+            }
+            found { print }
+            ' CHANGELOG.md
+          }
+
+          notes="$(extract_section "$GITHUB_REF_NAME")"
+          if [[ -z "$notes" ]]; then
+            notes="$(extract_section "Unreleased")"
+            if [[ -n "$notes" ]]; then
+              notes="$(printf '%s\n' "$notes" | awk -v heading="$GITHUB_REF_NAME" '
+                NR == 1 { print "## " heading; next }
+                { print }
+              ')"
+            fi
+          fi
+          {
+            echo 'notes<<EOF'
+            echo "$notes"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_NOTES: ${{ steps.changelog.outputs.notes }}
+        run: |
+          set -euo pipefail
+          assets=(
             dist/DIM-Creator.exe
-            dist/*.zip
+            dist/DIM-Creator_*_win-x64.zip
+            dist/sbom.cdx.json
+            dist/SHA256SUMS.txt
+          )
+
+          if [[ -n "$RELEASE_NOTES" ]]; then
+            notes_file="$RUNNER_TEMP/release-notes.md"
+            printf '%s\n' "$RELEASE_NOTES" > "$notes_file"
+            gh release create "$GITHUB_REF_NAME" \
+              --verify-tag --notes-file "$notes_file" "${assets[@]}"
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --verify-tag --generate-notes "${assets[@]}"
+          fi

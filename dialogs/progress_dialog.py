@@ -143,9 +143,6 @@ class BatchProgressDialog(MessageBoxBase):
         self.cancelButton2.setText("Cancelling...")
         log.info("User requested cancellation of batch packaging")
     
-    def isCancelled(self):
-        return self.cancelled
-    
     def updateOverallProgress(self, current, total):
         self.overall_progress.setValue(current)
         self.overall_text.setText(f"{current} of {total} builds complete")

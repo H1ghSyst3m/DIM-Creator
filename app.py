@@ -1,11 +1,8 @@
 import sys
 import os
 import tempfile
-import shutil
-import zipfile
 import stat
 import uuid
-import patoolib
 import ctypes
 import shiboken6
 import time
@@ -17,34 +14,31 @@ if sys.stderr is None:
     sys.stderr = open(os.devnull, "w")
 
 from qfluentwidgets import (
-    setFont, PrimaryPushButton, PushButton, LineEdit, setTheme, Theme,
-    EditableComboBox, CheckBox, InfoBarPosition, ProgressRing, ToolButton,
+    PrimaryPushButton, PushButton, LineEdit, setTheme, Theme,
+    EditableComboBox, CheckBox, InfoBarPosition, ToolButton,
     StateToolTip, DropDownPushButton, RoundMenu, Action
 )
 from qfluentwidgets import FluentIcon as FIF
 from PySide6.QtWidgets import (
     QMessageBox, QApplication, QWidget, QLabel, QDialog,
     QVBoxLayout, QFileDialog, QCompleter, QHBoxLayout,
-    QGraphicsBlurEffect, QStackedLayout, QSizePolicy, QFormLayout,
-    QSpacerItem
+    QSizePolicy, QFormLayout, QSpacerItem
 )
 from PySide6.QtCore import (
-    Qt, QThread, Signal, QSettings, QTimer, QRegularExpression
+    Qt, QSettings, QTimer, QRegularExpression
 )
 from PySide6.QtGui import (
     QIcon, QKeySequence, QIntValidator, QRegularExpressionValidator,
     QShortcut
 )
-from concurrent.futures import ThreadPoolExecutor
 
 from utils import (
-    resource_path, documents_dir, downloads_dir, DOC_MAIN_DIR,
-    suppress_cmd_window, get_optimal_workers,
+    resource_path, DOC_MAIN_DIR,
     tooltip_stylesheet, label_stylesheet,
     show_error, show_info, show_success, show_warning,
-    ensure_builds_directory_structure, create_build_folder,
-    get_build_content_dir, get_build_dir, create_session_backup,
-    SESSION_FILE, delete_session_file, delete_all_build_folders,
+    ensure_builds_directory_structure, create_build_folder, clean_build_content,
+    get_build_content_dir, get_build_dir,
+    SESSION_FILE, delete_all_build_folders,
     IGNORE_SYSTEM_FILES, format_file_size
 )
 from logger_utils import get_logger
@@ -52,17 +46,31 @@ from widgets import (
     ProductLineEdit, TagSelectionDialog, CustomCompactSpinBox, ImageLabel,
     FileExplorer, BuildListWidget
 )
-from packaging_utils import PackagingWorker, PackageSpec, BatchPackagingWorker
-from naming_utils import build_dim_zip_filename
+from packaging_utils import (
+    BatchPackagingWorker, PackageInventory, PackageSpec, PackagingError,
+    validate_package_destination, validate_package_spec,
+)
+from naming_utils import (
+    build_dim_zip_filename, validate_dim_part, validate_dim_prefix,
+    validate_dim_sku,
+)
 from extraction_utils import (
-    ContentExtractionWorker, MultiBuildExtractionWorker,
-    classify_archives, detect_heuristic_ordering
+    ArchivePlanningResult, ArchivePlanningWorker,
+    ConflictPolicy, ContentExtractionWorker, ExtractionResult,
+    ExtractionRollbackError,
+    MultiBuildExtractionWorker,
 )
 from config_utils import load_configurations
 from settings import SettingsDialog
 from updater import UpdateManager
 from version import APP_VERSION
-from session import Build, save_session, load_session, create_default_session
+from session import (
+    MAX_BUILDS, Build, Session, SessionRecoveryError,
+    UnsupportedSessionVersionError,
+    create_default_session, delete_session_artifacts, load_session_result,
+    save_session,
+)
+from operation_state import OperationState
 from build_manager import (
     create_build, delete_build, get_build_data, validate_build,
     set_field_override, sync_to_children, sync_from_parent, get_effective_value
@@ -74,24 +82,42 @@ log.info("Application starting...")
 
 settings = QSettings("Syst3mApps", "DIMCreator")
 
-documents_path = documents_dir()
-doc_main_dir = DOC_MAIN_DIR
 logo_path = resource_path(
     os.path.join('assets', 'images', 'logo', 'favicon.ico')
 )
 
 
+def _is_complete_guid(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        return str(uuid.UUID(value)) == value.casefold()
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
 class DIMPackageGUI(QWidget):
     def __init__(self):
         super().__init__()
-        self.doc_main_dir = doc_main_dir
+        self.operation_state = OperationState.IDLE
+        self._close_ready = False
+        self._pending_planning_results = 0
+        self._pending_extraction_results = 0
+        self._pending_rollback_result = None
+        self._close_poll_timer = QTimer(self)
+        self._close_poll_timer.setSingleShot(True)
+        self._close_poll_timer.timeout.connect(self._finishDeferredClose)
+        self.doc_main_dir = DOC_MAIN_DIR
         (self.storeitems, self.store_prefixes, self.available_tags,
          self.daz_folders) = load_configurations(self.doc_main_dir)
         self.stateTooltip = None
         
         self.session = None
         self.current_build = None
+        self.archivePlanningWorker = None
+        self._archive_import_plan = None
         self._loading_build = False
+        self._session_warning = ""
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
         self._save_timer.setInterval(500)
@@ -103,20 +129,20 @@ class DIMPackageGUI(QWidget):
         self.initUI()
         self.loadSettings()
         self.updateZipPreview()
+        if self._session_warning:
+            QTimer.singleShot(
+                0,
+                lambda: show_warning(
+                    self, "Session Recovered", self._session_warning,
+                    Qt.Vertical, duration=8000,
+                ),
+            )
         self.updater = UpdateManager(
             self, settings, current_version=APP_VERSION, interval_hours=24
         )
         self.updater.schedule_on_startup_if_enabled()
-        QTimer.singleShot(0, self.updateSourcePrefixBasedOnStore)
-        self._extractionHadError = False
 
     def loadSettings(self):
-        self.prefix_input.setText(
-            settings.value("prefix_input", "", type=str)
-        )
-        self.product_tags_input.setText(
-            settings.value("product_tags_input", "DAZStudio4_5", type=str)
-        )
         self.last_destination_folder = settings.value(
             "last_destination_folder", os.path.expanduser("~"), type=str
         )
@@ -127,57 +153,147 @@ class DIMPackageGUI(QWidget):
             "template_destination", "", type=str
         )
 
-        saved_store = settings.value("store_input", "", type=str)
-        if saved_store:
-            index = self.store_input.findText(saved_store)
-            if index >= 0:
-                self.store_input.setCurrentIndex(index)
-            else:
-                log.warning(
-                    f"Saved store '{saved_store}' not found in available "
-                    "stores, using default."
-                )
+        self.use_store_prefix_checkbox.blockSignals(True)
         self.use_store_prefix_checkbox.setChecked(
             settings.value("auto_prefix", False, type=bool)
         )
+        self.use_store_prefix_checkbox.blockSignals(False)
+        self.prefix_input.setEnabled(
+            not self.use_store_prefix_checkbox.isChecked()
+        )
 
     def saveSettings(self):
-        settings.setValue("prefix_input", self.prefix_input.text())
-        settings.setValue("product_tags_input", self.product_tags_input.text())
+        store = self.store_input.currentText().strip()
+        if store:
+            settings.setValue("store_input", store)
+        try:
+            prefix = validate_dim_prefix(self.prefix_input.text())
+        except ValueError:
+            pass
+        else:
+            settings.setValue("prefix_input", prefix)
         settings.setValue("last_destination_folder", self.last_destination_folder)
-        settings.setValue("store_input", self.store_input.currentText())
         settings.setValue("auto_prefix", self.use_store_prefix_checkbox.isChecked())
+        settings.sync()
+
+    def _preferredStoreForNewSession(self) -> str:
+        preferred = settings.value("store_input", "", type=str).strip()
+        for store in self.storeitems:
+            if store.casefold() == preferred.casefold():
+                return store
+        return self.storeitems[0] if self.storeitems else ""
+
+    def _preferredPrefixForNewSession(self) -> str:
+        preferred = settings.value("prefix_input", "", type=str)
+        try:
+            return validate_dim_prefix(preferred, fallback="LOCAL")
+        except ValueError:
+            return "LOCAL"
+
+    def canMutateWorkspace(self) -> bool:
+        return self.operation_state is OperationState.IDLE
+
+    def _setOperationState(self, state: OperationState):
+        self.operation_state = state
+        busy = state is not OperationState.IDLE
+        if busy:
+            save_timer = getattr(self, "_save_timer", None)
+            if save_timer is not None:
+                save_timer.stop()
+            image_label = getattr(self, "image_label", None)
+            abort_download = getattr(image_label, "_abort_active_download", None)
+            if callable(abort_download):
+                abort_download()
+        for name in (
+            "buildListWidget", "fileExplorer", "store_input", "prefix_input",
+            "product_name_input", "sku_input", "product_tags_input",
+            "guid_input", "product_part_input", "image_label",
+            "support_clean_input", "use_store_prefix_checkbox", "clear_button",
+            "extract_button", "package_all_button", "package_selected_button",
+            "settings_button", "generate_guid_button", "sync_container_widget",
+            "tags_button",
+        ):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.setEnabled(not busy)
+        if not busy:
+            self.package_selected_button.setEnabled(self._hasCheckedBuilds())
+            self.prefix_input.setEnabled(
+                not self.use_store_prefix_checkbox.isChecked()
+            )
+
+    def _runningWorkers(self):
+        workers = []
+        for name in (
+            "batch_packaging_worker", "archivePlanningWorker",
+            "extractionWorker",
+        ):
+            worker = getattr(self, name, None)
+            if worker is not None and worker.isRunning():
+                workers.append(worker)
+        updater_thread = getattr(getattr(self, "updater", None), "_thread", None)
+        if updater_thread is not None and updater_thread.isRunning():
+            workers.append(updater_thread)
+        return workers
+
+    def _requestWorkerCancellation(self):
+        for worker in self._runningWorkers():
+            cancel = getattr(worker, "requestCancellation", None)
+            if callable(cancel):
+                cancel()
+            worker.requestInterruption()
+
+    def _finishDeferredClose(self):
+        pending_rollback = getattr(self, "_pending_rollback_result", None)
+        if pending_rollback is not None and pending_rollback.rollback_pending:
+            self._close_ready = False
+            self._setOperationState(OperationState.EXTRACTING)
+            return
+        if (
+            self._runningWorkers()
+            or getattr(self, "_pending_planning_results", 0)
+            or getattr(self, "_pending_extraction_results", 0)
+        ):
+            self._requestWorkerCancellation()
+            self._close_poll_timer.start(100)
+            return
+        self._close_ready = True
+        self.close()
+
+    def _isPristineSession(self) -> bool:
+        if not self.session or len(self.session.builds) != 1:
+            return False
+
+        build = self.session.builds[0]
+        for field in ('product_name', 'sku', 'image_path'):
+            value = get_effective_value(self.session, build, field)
+            if value and value.strip():
+                return False
+
+        try:
+            content_dir = get_build_content_dir(build.folder)
+            if os.path.exists(content_dir):
+                ignored = {name.casefold() for name in IGNORE_SYSTEM_FILES}
+                entries = (
+                    entry for entry in os.listdir(content_dir)
+                    if entry.casefold() not in ignored
+                )
+                if next(entries, None) is not None:
+                    return False
+        except OSError as exc:
+            log.warning(
+                "Error checking content directory for %s: %s",
+                build.folder,
+                exc,
+            )
+            return False
+
+        return True
 
     def hasUserMadeChanges(self) -> bool:
         if not self.session or not self.session.builds:
             return False
-        
-        if len(self.session.builds) > 1:
-            return True
-        
-        for build in self.session.builds:
-            product_name = get_effective_value(self.session, build, 'product_name')
-            if product_name and product_name.strip():
-                return True
-            
-            sku = get_effective_value(self.session, build, 'sku')
-            if sku and sku.strip():
-                return True
-            
-            image_path = get_effective_value(self.session, build, 'image_path')
-            if image_path and image_path.strip():
-                return True
-            
-            try:
-                content_dir = get_build_content_dir(build.folder)
-                if os.path.exists(content_dir):
-                    entries = [e for e in os.listdir(content_dir) if e not in IGNORE_SYSTEM_FILES]
-                    if entries:
-                        return True
-            except OSError as e:
-                log.warning(f"Error checking content directory for {build.folder}: {e}")
-        
-        return False
+        return not self._isPristineSession()
 
     def performSessionCleanup(self) -> tuple[bool, list[str]]:
         try:
@@ -189,8 +305,9 @@ class DIMPackageGUI(QWidget):
             
             if failed:
                 log.warning(f"Some build folders failed to delete: {failed}")
-            
-            delete_session_file()
+                return (True, failed)
+
+            delete_session_artifacts(SESSION_FILE, include_backups=True)
             
             log.info("Cleanup complete")
             return (True, failed)
@@ -199,6 +316,9 @@ class DIMPackageGUI(QWidget):
             return (False, [])
     
     def onNewSession(self):
+        if not self.canMutateWorkspace():
+            show_info(self, "Busy", "Please wait for the current operation to finish.")
+            return
         reply = QMessageBox.question(
             self,
             "Start New Session?",
@@ -220,11 +340,13 @@ class DIMPackageGUI(QWidget):
             return
         
         if failed:
-            show_warning(
+            show_error(
                 self,
-                "Partial Cleanup",
-                f"Some build folders could not be deleted: {', '.join(failed)}\n\nCreating new session anyway."
+                "Cleanup Incomplete",
+                "A new session was not created because these build folders could "
+                f"not be removed: {', '.join(failed)}"
             )
+            return
         
         if hasattr(self.session, 'builds'):
             self.session.builds.clear()
@@ -232,10 +354,10 @@ class DIMPackageGUI(QWidget):
         self.session = create_default_session()
         first_build = self.session.builds[0]
         
-        if preserved_store:
-            first_build.store = preserved_store
-        if preserved_prefix:
-            first_build.prefix = preserved_prefix
+        first_build.store = preserved_store.strip() or self._preferredStoreForNewSession()
+        first_build.prefix = (
+            preserved_prefix.strip() or self._preferredPrefixForNewSession()
+        )
         
         create_build_folder(first_build.folder)
         
@@ -262,7 +384,30 @@ class DIMPackageGUI(QWidget):
         log.info("New session created successfully")
 
     def closeEvent(self, event):
+        pending_rollback = getattr(self, "_pending_rollback_result", None)
+        if pending_rollback is not None and pending_rollback.rollback_pending:
+            rollback_error = self._retryExtractionRollback(pending_rollback)
+            if rollback_error is not None:
+                self._close_ready = False
+                self._setOperationState(OperationState.EXTRACTING)
+                event.ignore()
+                return
+        if (
+            not self._close_ready
+            and (
+                self._runningWorkers()
+                or getattr(self, "_pending_planning_results", 0)
+                or getattr(self, "_pending_extraction_results", 0)
+            )
+        ):
+            self._setOperationState(OperationState.CLOSING)
+            self._requestWorkerCancellation()
+            self._close_poll_timer.start(100)
+            event.ignore()
+            return
+
         show_dialog = self.hasUserMadeChanges()
+        result = ExitDialog.RESULT_SAVE
         
         if show_dialog:
             dialog = ExitDialog(self)
@@ -270,6 +415,8 @@ class DIMPackageGUI(QWidget):
             result = dialog.getResult()
             
             if result == ExitDialog.RESULT_CANCEL:
+                self._close_ready = False
+                self._setOperationState(OperationState.IDLE)
                 event.ignore()
                 return
             elif result == ExitDialog.RESULT_CLEAN:
@@ -277,19 +424,23 @@ class DIMPackageGUI(QWidget):
                 
                 if not success:
                     show_error(self, "Cleanup Error", "Failed to clean up session")
+                    self._close_ready = False
+                    self._setOperationState(OperationState.IDLE)
+                    event.ignore()
+                    return
                 elif failed:
-                    show_warning(
+                    show_error(
                         self,
-                        "Partial Cleanup",
-                        f"Some build folders could not be deleted: {', '.join(failed)}"
+                        "Cleanup Incomplete",
+                        "The app remains open because these build folders could not "
+                        f"be removed: {', '.join(failed)}"
                     )
-        
-        try:
-            self.package_all_button.setEnabled(False)
-            self.package_selected_button.setEnabled(False)
-            self.extract_button.setEnabled(False)
-        except Exception:
-            pass
+                    self._close_ready = False
+                    self._setOperationState(OperationState.IDLE)
+                    event.ignore()
+                    return
+
+        self._setOperationState(OperationState.CLOSING)
 
         try:
             for attr in ("stateTooltip", "_finalTip"):
@@ -305,37 +456,17 @@ class DIMPackageGUI(QWidget):
         except Exception:
             pass
 
-        for attr in ("packaging_worker", "extractionWorker"):
-            t = getattr(self, attr, None)
-            try:
-                if t and t.isRunning():
-                    t.requestInterruption()
-                    t.wait(5000)
-            except Exception:
-                pass
-
         try:
-            t = getattr(getattr(self, "updater", None), "_thread", None)
-            if t and t.isRunning():
-                t.requestInterruption()
-                t.wait(3000)
-        except Exception:
-            pass
+            self.saveSettings()
+        except Exception as exc:
+            log.warning("Could not save UI settings during shutdown: %s", exc)
 
-        try:
-            self.progress_ring.hide()
-            self.progress_ring.setValue(0)
-        except Exception:
-            pass
-
-        self.saveSettings()
-        self.cleanUpTemporaryImage()
-        
-        if show_dialog:
-            if result == ExitDialog.RESULT_SAVE:
-                self.saveSession()
-        else:
-            self.saveSession()
+        should_save = not show_dialog or result == ExitDialog.RESULT_SAVE
+        if should_save and not self.saveSession():
+            self._close_ready = False
+            self._setOperationState(OperationState.IDLE)
+            event.ignore()
+            return
 
         super().closeEvent(event)
 
@@ -343,15 +474,42 @@ class DIMPackageGUI(QWidget):
         ensure_builds_directory_structure()
     
     def loadSession(self):
-        self.session = load_session(SESSION_FILE)
-        
+        try:
+            result = load_session_result(SESSION_FILE)
+        except UnsupportedSessionVersionError as exc:
+            QMessageBox.critical(
+                self, "Session Version Not Supported",
+                f"{exc}\n\nThe session was not changed. Install a newer "
+                "DIM-Creator version to open it.",
+            )
+            raise RuntimeError(str(exc)) from exc
+        except SessionRecoveryError as exc:
+            reply = QMessageBox.warning(
+                self, "Session Recovery Failed",
+                f"{exc}\n\nCreate a new session? The quarantined session will "
+                "be kept for manual recovery.",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                raise RuntimeError(str(exc)) from exc
+            result = None
+
+        self.session = result.session if result is not None else None
+        if result is not None and result.warning:
+            self._session_warning = result.warning
+
         if self.session is None:
             log.info("No session found, creating new session with Build 1")
             self.session = create_default_session()
+            self.session.builds[0].store = self._preferredStoreForNewSession()
+            self.session.builds[0].prefix = self._preferredPrefixForNewSession()
             
             create_build_folder(self.session.builds[0].folder)
             
-            self.saveSession()
+            if not self.saveSession():
+                raise RuntimeError("Could not create the initial session file")
         else:
             log.info(f"Session loaded with {len(self.session.builds)} builds")
             
@@ -360,29 +518,40 @@ class DIMPackageGUI(QWidget):
                 if not os.path.exists(content_dir):
                     log.warning(f"Build folder missing: {build.folder}, recreating")
                     create_build_folder(build.folder)
+
+            if self._isPristineSession():
+                self.session.builds[0].guid = str(uuid.uuid4())
+
+            self._revalidateAllBuildsStatus()
         
         if self.session.builds:
-            if 0 <= self.session.last_selected_build < len(self.session.builds):
-                self.current_build = self.session.builds[self.session.last_selected_build]
-            else:
-                self.current_build = self.session.builds[0]
+            self.current_build = next(
+                (
+                    build for build in self.session.builds
+                    if build.id == self.session.last_selected_build_id
+                ),
+                self.session.builds[0],
+            )
     
     def saveSession(self):
-        if self.session:
-            try:
-                create_session_backup()
-                
-                save_session(self.session, SESSION_FILE)
-                log.info("Session saved successfully")
-            except Exception as e:
-                log.error(f"Failed to save session: {e}")
-                show_error(self, "Session Save Error", f"Failed to save session: {e}")
+        if not self.session:
+            return True
+        try:
+            save_session(self.session, SESSION_FILE)
+            log.info("Session saved successfully")
+            return True
+        except Exception as e:
+            log.error(f"Failed to save session: {e}")
+            show_error(self, "Session Save Error", f"Failed to save session: {e}")
+            return False
     
     def onBuildSelected(self, build_id: str):
-        for i, build in enumerate(self.session.builds):
+        if not self.canMutateWorkspace():
+            return
+        for build in self.session.builds:
             if build.id == build_id:
                 self.current_build = build
-                self.session.last_selected_build = i
+                self.session.last_selected_build_id = build.id
                 
                 self.loadBuildIntoEditor(build)
                 
@@ -394,6 +563,8 @@ class DIMPackageGUI(QWidget):
                 break
     
     def onBuildAdded(self):
+        if not self.canMutateWorkspace():
+            return
         try:
             new_build = create_build(self.session)
             
@@ -409,6 +580,8 @@ class DIMPackageGUI(QWidget):
             show_error(self, "Error", f"Failed to create build: {e}")
     
     def onBuildDeleted(self, build_id: str):
+        if not self.canMutateWorkspace():
+            return
         try:
             delete_build(self.session, build_id)
             
@@ -425,20 +598,24 @@ class DIMPackageGUI(QWidget):
             show_error(self, "Error", f"Failed to delete build: {e}")
     
     def onBuildsReordered(self):
+        if not self.canMutateWorkspace():
+            return
         if self.current_build:
-            found = False
-            for i, build in enumerate(self.session.builds):
-                if build.id == self.current_build.id:
-                    self.current_build = build
-                    self.session.last_selected_build = i
-                    self.loadBuildIntoEditor(build)
-                    found = True
-                    break
-            
-            if not found and self.session.builds:
+            selected = next(
+                (
+                    build for build in self.session.builds
+                    if build.id == self.current_build.id
+                ),
+                None,
+            )
+            if selected is not None:
+                self.current_build = selected
+                self.session.last_selected_build_id = selected.id
+                self.loadBuildIntoEditor(selected)
+            elif self.session.builds:
                 log.warning(f"Current build {self.current_build.id} not found after reorder, selecting first build")
                 self.current_build = self.session.builds[0]
-                self.session.last_selected_build = 0
+                self.session.last_selected_build_id = self.current_build.id
                 self.loadBuildIntoEditor(self.current_build)
         
         self.saveSession()
@@ -477,8 +654,20 @@ class DIMPackageGUI(QWidget):
             image_path = build_data.get('image_path', '')
             if image_path and os.path.exists(image_path) and hasattr(self, 'image_label'):
                 self.image_label.setImagePath(image_path)
+                managed_path = self.image_label.imagePath
+                if managed_path and managed_path != image_path:
+                    source_build = build
+                    if build.part > 1 and 'image_path' not in build.overrides:
+                        source_build = next(
+                            (item for item in self.session.builds if item.part == 1),
+                            build,
+                        )
+                    set_field_override(
+                        self.session, source_build, 'image_path', managed_path
+                    )
+                    self._save_timer.start()
             elif hasattr(self, 'image_label'):
-                self.image_label.removeImage()
+                self.image_label.resetToPlaceholder(emit=False)
             
             self.updateZipPreview()
             
@@ -489,6 +678,8 @@ class DIMPackageGUI(QWidget):
     def saveBuildFieldChanges(self):
         if self._loading_build:
             return
+        if not self.canMutateWorkspace():
+            return
         if not self.current_build or not self.session:
             return
         
@@ -498,14 +689,11 @@ class DIMPackageGUI(QWidget):
         set_field_override(self.session, self.current_build, 'sku', self.sku_input.text())
         set_field_override(self.session, self.current_build, 'tags', self.product_tags_input.text())
         
-        self.current_build.guid = self.guid_input.text() if hasattr(self, 'guid_input') else self.current_build.guid
-        
         if hasattr(self, 'image_label'):
             image_path = self.image_label.imagePath
-            if image_path:
-                set_field_override(self.session, self.current_build, 'image_path', image_path)
-            elif self.current_build.part > 1 and 'image_path' in self.current_build.overrides:
-                del self.current_build.overrides['image_path']
+            set_field_override(
+                self.session, self.current_build, 'image_path', image_path or ""
+            )
         
         content_dir = get_build_content_dir(self.current_build.folder)
         effective_data = get_build_data(self.session, self.current_build)
@@ -615,6 +803,8 @@ class DIMPackageGUI(QWidget):
             self.sync_to_all_button.hide()
     
     def onSyncFromBuild1(self):
+        if not self.canMutateWorkspace():
+            return
         if not self.current_build or not self.session:
             return
         
@@ -652,6 +842,8 @@ class DIMPackageGUI(QWidget):
             show_error(self, "Sync Failed", f"Failed to sync from Build 1: {str(e)}")
     
     def onSyncToAll(self, field_name: str):
+        if not self.canMutateWorkspace():
+            return
         if not self.current_build or not self.session:
             return
         
@@ -722,33 +914,29 @@ class DIMPackageGUI(QWidget):
             log.error(f"Error syncing to all parts: {e}")
             show_error(self, "Sync Failed", f"Failed to sync to all parts: {str(e)}")
     
-    def onGuidChanged(self):
+    def onGuidChanged(self, guid: str):
         if self._loading_build:
             return
-        if self.current_build and self.session:
-            self.saveBuildFieldChanges()
+        if not self.canMutateWorkspace():
+            return
+        if not self.current_build or not self.session:
+            return
+        if not _is_complete_guid(guid):
+            return
+        self.current_build.guid = guid
+        self.saveBuildFieldChanges()
     
     def onImageChanged(self, image_path):
         if self._loading_build:
             return
+        if not self.canMutateWorkspace():
+            return
         if self.current_build and self.session:
             self.saveBuildFieldChanges()
 
-    def cleanUpTemporaryImage(self):
-        try:
-            if getattr(self, 'image_label', None) and self.image_label.imagePath:
-                if getattr(self.image_label, "_ownedTemp", False):
-                    image_path = self.image_label.imagePath
-                    try:
-                        os.remove(image_path)
-                        log.info(f"Temporary image file deleted: {image_path}")
-                    except OSError as e:
-                        log.error(f"Error deleting temporary image file '{image_path}': {e}")
-                self.image_label.removeImage()
-        except Exception as e:
-            log.error(f"cleanUpTemporaryImage failed: {e}")
-
     def openTagSelectionDialog(self):
+        if not self.canMutateWorkspace():
+            return
         selected_tags = self.product_tags_input.text().split(",")
 
         dialog = TagSelectionDialog(self.available_tags, selected_tags, self)
@@ -756,15 +944,10 @@ class DIMPackageGUI(QWidget):
             selected_tags = dialog.getSelectedTags()
             self.product_tags_input.setText(",".join(selected_tags))
 
-    def updateTagsInput(self, tag, checked):
-        current_tags = self.product_tags_input.text().split(',')
-        if checked and tag not in current_tags:
-            current_tags.append(tag)
-        elif not checked and tag in current_tags:
-            current_tags.remove(tag)
-        self.product_tags_input.setText(','.join(current_tags))
-
     def updateSourcePrefixBasedOnStore(self):
+        if not self.canMutateWorkspace():
+            self.prefix_input.setEnabled(False)
+            return
         use_store_prefix = self.use_store_prefix_checkbox.isChecked()
         self.prefix_input.setEnabled(not use_store_prefix)
 
@@ -776,7 +959,7 @@ class DIMPackageGUI(QWidget):
         self.updateZipPreview()
 
     def build_zip_filename(self) -> str:
-        prefix_raw = self.prefix_input.text() or "IM"
+        prefix_raw = self.prefix_input.text() or "LOCAL"
         sku_raw = self.sku_input.text() or ""
         part_val = self.product_part_input.value()
         name_raw = self.product_name_input.text() or "Package"
@@ -788,39 +971,6 @@ class DIMPackageGUI(QWidget):
             if hasattr(self, 'zip_preview_edit'):
                 self.zip_preview_edit.setText(self.build_zip_filename())
                 self.zip_preview_edit.setCursorPosition(0)
-        except Exception:
-            pass
-
-    def _setImageBusy(self, busy: bool, text: str = "Processing…", percent: int | None = None):
-        try:
-            if busy:
-                self.progress_ring.setValue(0)
-
-                if text:
-                    self._overlay_text.setText(text)
-                if percent is not None:
-                    self.progress_ring.setValue(max(0, min(100, percent)))
-
-                eff = QGraphicsBlurEffect(self.image_label)
-                eff.setBlurRadius(12)
-                self._current_blur = eff
-                self.image_label.setGraphicsEffect(eff)
-
-                self._image_overlay.show()
-                self._image_overlay.raise_()
-            else:
-                self._image_overlay.hide()
-
-                eff = getattr(self, "_current_blur", None)
-                if eff is not None:
-                    self.image_label.setGraphicsEffect(None)
-                    try:
-                        eff.deleteLater()
-                    except Exception:
-                        pass
-                    self._current_blur = None
-
-                self.progress_ring.setValue(0)
         except Exception:
             pass
 
@@ -880,7 +1030,7 @@ class DIMPackageGUI(QWidget):
         pr_h.setSpacing(8)
         self.prefix_input = LineEdit(self)
         self.prefix_input.setClearButtonEnabled(True)
-        self.prefix_input.setPlaceholderText("IM")
+        self.prefix_input.setPlaceholderText("LOCAL")
         self.prefix_input.setToolTip("Enter the source prefix, typically the vendor's initials.")
         self.use_store_prefix_checkbox = CheckBox("Auto Prefix", self)
         self.use_store_prefix_checkbox.stateChanged.connect(self.updateSourcePrefixBasedOnStore)
@@ -1072,41 +1222,11 @@ class DIMPackageGUI(QWidget):
         right.setContentsMargins(0, 0, 0, 0)
         right.setSpacing(10)
 
-        image_container = QWidget(right_wrap)
-        stack = QStackedLayout(image_container)
-        stack.setStackingMode(QStackedLayout.StackingMode.StackAll)
-
-        self.image_label = ImageLabel(image_container)
+        self.image_label = ImageLabel(right_wrap)
         self.image_label.setToolTip("Drop an image here or click to select an image file.")
         self.image_label.setMinimumSize(300, 320)
         self.image_label.setMaximumWidth(400)
-        stack.addWidget(self.image_label)
-
-        self._image_overlay = QWidget(image_container)
-        self._image_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self._image_overlay.setStyleSheet("background: transparent;")
-        ov = QVBoxLayout(self._image_overlay)
-        ov.setContentsMargins(0, 0, 0, 0)
-        ov.setAlignment(Qt.AlignCenter)
-
-        self.progress_ring = ProgressRing(self._image_overlay)
-        self.progress_ring.setFixedSize(70, 70)
-        self.progress_ring.setTextVisible(True)
-        self.progress_ring.setValue(0)
-        setFont(self.progress_ring, fontSize=13)
-
-        self._overlay_text = QLabel("Working…", self._image_overlay)
-        self._overlay_text.setStyleSheet("color: white; font-size: 10pt;")
-        self._overlay_text.setAlignment(Qt.AlignHCenter)
-
-        ov.addWidget(self.progress_ring, 0, Qt.AlignCenter)
-        ov.addSpacing(8)
-        ov.addWidget(self._overlay_text, 0, Qt.AlignCenter)
-
-        stack.addWidget(self._image_overlay)
-        self._image_overlay.hide()
-
-        right.addWidget(image_container, 1)
+        right.addWidget(self.image_label, 1)
         main.addWidget(right_wrap, 0)
 
         util_bar = QHBoxLayout()
@@ -1152,6 +1272,7 @@ class DIMPackageGUI(QWidget):
 
         QShortcut(QKeySequence("Ctrl+G"), self, self.generateGUID)
         QShortcut(QKeySequence("Ctrl+Return"), self, self.process)
+        QShortcut(QKeySequence("Ctrl+Enter"), self, self.process)
         QShortcut(QKeySequence("Ctrl+N"), self, self.clearAll)
 
         self.prefix_input.textChanged.connect(self.updateZipPreview)
@@ -1175,6 +1296,8 @@ class DIMPackageGUI(QWidget):
             self.fileExplorer.setRootPath(content_dir)
 
     def showSettingsDialog(self):
+        if not self.canMutateWorkspace():
+            return
         dialog = SettingsDialog(self.doc_main_dir, self)
 
         dialog.enable_template_detection_checkbox.setChecked(self.enable_template_detection)
@@ -1202,12 +1325,26 @@ class DIMPackageGUI(QWidget):
             settings.setValue("auto_update_check", auto_enabled)
             self.updater.set_auto_enabled(auto_enabled)
 
-            (self.storeitems, self.store_prefixes, self.available_tags,
-             self.daz_folders) = load_configurations(self.doc_main_dir)
+            self._reloadConfigurationChoices()
+
+    def _reloadConfigurationChoices(self):
+        selected_store = self.store_input.currentText()
+        (self.storeitems, self.store_prefixes, self.available_tags,
+         self.daz_folders) = load_configurations(self.doc_main_dir)
+        signals_were_blocked = self.store_input.blockSignals(True)
+        try:
             self.store_input.clear()
             self.store_input.addItems(self.storeitems)
-            self.store_completer = QCompleter(self.storeitems, self)
-            self.store_input.setCompleter(self.store_completer)
+            index = self.store_input.findText(selected_store)
+            if index >= 0:
+                self.store_input.setCurrentIndex(index)
+            else:
+                self.store_input.setCurrentIndex(-1)
+                self.store_input.setCurrentText(selected_store)
+        finally:
+            self.store_input.blockSignals(signals_were_blocked)
+        self.store_completer = QCompleter(self.storeitems, self)
+        self.store_input.setCompleter(self.store_completer)
 
     def toggleAlwaysOnTop(self):
         self.setWindowFlags(self.windowFlags() ^ Qt.WindowType.WindowStaysOnTopHint)
@@ -1215,15 +1352,14 @@ class DIMPackageGUI(QWidget):
         self.show()
 
     def generateGUID(self):
+        if not self.canMutateWorkspace():
+            return
         new_guid = str(uuid.uuid4())
         self.guid_input.setText(new_guid)
 
     def clearAll(self):
-        if getattr(self, "packaging_worker", None) and self.packaging_worker.isRunning():
-            show_info(self, "Busy", "Cannot clear while packaging is running.")
-            return
-        if getattr(self, "extractionWorker", None) and self.extractionWorker.isRunning():
-            show_info(self, "Busy", "Cannot clear while extraction is running.")
+        if not self.canMutateWorkspace():
+            show_info(self, "Busy", "Please wait for the current operation to finish.")
             return
         reply = QMessageBox.question(
             self,
@@ -1236,35 +1372,35 @@ class DIMPackageGUI(QWidget):
         )
 
         if reply == QMessageBox.StandardButton.Yes:
-            self.clearFields()
-            self.cleanCurrentBuildFolder()
+            if self.cleanCurrentBuildFolder():
+                self.clearFields()
 
     def cleanCurrentBuildFolder(self):
+        if not self.canMutateWorkspace():
+            return False
         if not self.current_build:
             log.warning("No current build to clean")
-            return
+            return False
         
         build_path = get_build_dir(self.current_build.folder)
         content_dir = get_build_content_dir(self.current_build.folder)
         
         if not os.path.exists(build_path):
             log.warning(f"Build directory does not exist: {build_path}")
-            return
+            return False
         
-        log.info(f"Attempting to clean the entire build folder: {build_path}")
-        
-        for filename in os.listdir(build_path):
-            file_path = os.path.join(build_path, filename)
-            try:
-                if os.path.isfile(file_path) or os.path.islink(file_path):
-                    os.unlink(file_path)
-                elif os.path.isdir(file_path):
-                    shutil.rmtree(file_path, onerror=self.handle_remove_readonly)
-            except Exception as e:
-                log.error(f"Failed to delete {file_path}: {e}")
-        
-        os.makedirs(content_dir, exist_ok=True)
-        
+        try:
+            clean_build_content(self.current_build.folder)
+        except OSError as exc:
+            log.error("Failed to clean build folder %s: %s", build_path, exc)
+            show_error(
+                self, "Clean Failed",
+                "The build was not marked empty because cleanup was incomplete:<br>"
+                + str(exc),
+            )
+            self._revalidateAllBuildsStatus()
+            return False
+
         log.info(f"Build folder successfully cleared: {build_path}")
         
         if hasattr(self, 'fileExplorer'):
@@ -1282,25 +1418,14 @@ class DIMPackageGUI(QWidget):
         
         if hasattr(self, 'fileExplorer'):
             self.fileExplorer.setRootPath(content_dir)
+        return True
 
 
     def handle_remove_readonly(self, func, path, exc_info):
-        try:
-            if not path:
-                return
-            try:
-                os.chmod(path, stat.S_IWRITE)
-            except Exception:
-                pass
-            try:
-                if os.path.isdir(path) and not os.path.islink(path):
-                    os.rmdir(path)
-                else:
-                    os.remove(path)
-            except Exception:
-                pass
-        except Exception:
-            pass
+        if not path:
+            raise OSError("Cleanup callback received an empty path")
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
 
     def clearFields(self):
         log.info("Attempting to clear all data.")
@@ -1310,8 +1435,7 @@ class DIMPackageGUI(QWidget):
             self.product_part_input.setValue(1)
             self.generateGUID()
             self.support_clean_input.setChecked(True)
-            self.cleanUpTemporaryImage()
-            self.image_label.loadPlaceholderImage()
+            self.image_label.resetToPlaceholder()
             self.updateZipPreview()
             log.info("All data successfully cleared.")
             show_info(self, "Clearing Successful", "All data successfully cleared.")
@@ -1319,137 +1443,11 @@ class DIMPackageGUI(QWidget):
             log.error(f"Failed to clear all data: {e}")
             show_error(self, "Error", "Failed to clear all data. Please check the logs for more details.")
 
-    def contentValidation(self, content_dir):
-        valid = any(os.path.exists(os.path.join(content_dir, folder)) for folder in self.daz_folders)
-        return valid
-
     def process(self):
-        if getattr(self, "packaging_worker", None) and self.packaging_worker.isRunning():
-            show_info(self, "Already running", "Packaging is already in progress.")
+        if not self.current_build:
+            show_info(self, "No Build", "There is no build to package.")
             return
-
-        store = self.store_input.currentText()
-        product_name = self.product_name_input.text()
-        prefix = self.prefix_input.text()
-        sku = self.sku_input.text()
-        product_part = self.product_part_input.value()
-        product_tags = self.product_tags_input.text()
-        image_path = self.image_label.imagePath
-        support_clean = self.support_clean_input.isChecked()
-        guid = self.guid_input.text()
-        if not guid:
-            guid = str(uuid.uuid4())
-            self.guid_input.setText(guid)
-
-        if not all([store, product_name, prefix, sku, product_part]):
-            show_info(
-                self, "Missing Required Fields",
-                "Please fill in all required fields to proceed with DIM "
-                "package creation.",
-                Qt.Vertical
-            )
-            return
-
-        destination_folder = QFileDialog.getExistingDirectory(
-            self, "Select Destination Folder", self.last_destination_folder
-        )
-        if not destination_folder:
-            show_info(
-                self, "DIM Creation Canceled",
-                "No destination folder selected. DIM package creation has "
-                "been canceled.",
-                Qt.Vertical
-            )
-            return
-        else:
-            self.last_destination_folder = destination_folder
-            settings.setValue("last_destination_folder", self.last_destination_folder)
-            try:
-                settings.sync()
-            except Exception:
-                pass
-
-        current_content_dir = get_build_content_dir(self.current_build.folder)
-        if not self.contentValidation(current_content_dir):
-            reply = QMessageBox.question(
-                self,
-                "Content Validation Failed",
-                "No recognized DAZ main folders found in the current build's content "
-                "directory. "
-                "Do you want to continue anyway?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if reply == QMessageBox.StandardButton.No:
-                show_info(
-                    self, "DIM Creation Canceled",
-                    "DIM package creation canceled due to content "
-                    "validation failure.",
-                    Qt.Vertical
-                )
-                return
-
-        current_content_dir = get_build_content_dir(self.current_build.folder)
-        spec = PackageSpec(
-            content_dir=current_content_dir,
-            store=store,
-            product_name=product_name,
-            prefix=prefix,
-            sku=sku,
-            product_part=product_part,
-            product_tags=product_tags,
-            image_path=image_path,
-            clean_support=support_clean,
-            guid=guid,
-            destination_folder=destination_folder
-        )
-
-        self.packaging_worker = PackagingWorker(spec, parent=self)
-
-        pw = self.packaging_worker
-        self.package_all_button.setEnabled(False)
-        self.package_selected_button.setEnabled(False)
-        self.extract_button.setEnabled(False)
-        self.clear_button.setEnabled(False)
-        self._setImageBusy(True, "Preparing…", 0)
-
-        pw.progress.connect(self.updateProgress)
-        pw.finished.connect(self.onPackagingFinished)
-        pw.start()
-
-    def updateProgress(self, percent: int, message: str):
-        self.progress_ring.setValue(percent)
-        self._setImageBusy(True, f"{message}… {percent}%", percent)
-
-    def onPackagingFinished(self, success: bool, message: str):
-        if success:
-            log.info("Packaging process completed successfully.")
-            self.DIMSuccessfullCreatedInfoBar()
-        else:
-            log.error(f"Packaging process failed: {message}")
-            show_error(
-                self, "Packaging Error",
-                f"An error occurred:<br><small>{message}</small>",
-                Qt.Horizontal, InfoBarPosition.TOP_RIGHT, True, 5000
-            )
-
-        self.resetPackagingState()
-
-    def resetPackagingState(self):
-        try:
-            self._setImageBusy(False)
-        except Exception:
-            pass
-        self.package_all_button.setEnabled(True)
-        self.package_selected_button.setEnabled(self._hasCheckedBuilds())
-        self.extract_button.setEnabled(True)
-        self.clear_button.setEnabled(True)
-        if getattr(self, 'packaging_worker', None):
-            self.packaging_worker.deleteLater()
-            self.packaging_worker = None
-        if getattr(self, 'batch_packaging_worker', None):
-            self.batch_packaging_worker.deleteLater()
-            self.batch_packaging_worker = None
+        self._packageBuilds([self.current_build])
 
     def _hasCheckedBuilds(self):
         if not hasattr(self, 'buildListWidget') or not self.session:
@@ -1459,11 +1457,15 @@ class DIMPackageGUI(QWidget):
         return len(checked_builds) > 0
     
     def onBuildCheckedChanged(self, build_id: str, checked: bool):
+        if not self.canMutateWorkspace():
+            return
         self.package_selected_button.setEnabled(self._hasCheckedBuilds())
         
         self.saveSession()
     
     def packageAllBuilds(self):
+        if not self.canMutateWorkspace():
+            return
         if not self.session or not self.session.builds:
             show_info(self, "No Builds", "There are no builds to package.")
             return
@@ -1471,6 +1473,8 @@ class DIMPackageGUI(QWidget):
         self._packageBuilds(self.session.builds)
     
     def packageSelectedBuilds(self):
+        if not self.canMutateWorkspace():
+            return
         if not hasattr(self, 'buildListWidget'):
             return
         
@@ -1483,51 +1487,62 @@ class DIMPackageGUI(QWidget):
         self._packageBuilds(checked_builds)
     
     def _packageBuilds(self, builds):
+        if not self.canMutateWorkspace():
+            show_info(self, "Busy", "Please wait for the current operation to finish.")
+            return
         builds_validation = self._validateBuildsForPackaging(builds)
-        
         validation_dialog = ValidationDialog(builds_validation, self.session, self)
         dialog_result = validation_dialog.exec()
-        
         result = validation_dialog.getResult()
-        
         log.info(f"Validation dialog result: {result} (QDialog result: {dialog_result})")
-        
+
         if result == ValidationDialog.RESULT_CANCEL:
-            log.info("User cancelled packaging from validation dialog")
             return
-        
-        builds_to_package = []
+
         if result == ValidationDialog.RESULT_PACKAGE_ALL:
-            log.info("User selected: Package All")
-            builds_to_package = builds
+            builds_to_package = list(builds)
         elif result == ValidationDialog.RESULT_PACKAGE_VALID:
-            log.info("User selected: Package Valid Only")
             builds_to_package = [
-                b['build'] for b in builds_validation 
+                b['build'] for b in builds_validation
                 if b['status'] == 'ready'
             ]
-            ready_count = len(builds_to_package)
-            skipped_count = len(builds) - ready_count
-            log.info(f"Package Valid Only: packaging {ready_count} ready builds, skipping {skipped_count} incomplete/empty builds")
-        
+        else:
+            return
+
         if not builds_to_package:
             show_info(self, "No Valid Builds", "There are no valid builds to package.")
             return
-        
+
         destination_folder = QFileDialog.getExistingDirectory(
             self, "Select Destination Folder",
             self.last_destination_folder or os.path.expanduser("~")
         )
-        
         if not destination_folder:
-            log.info("User cancelled destination folder selection")
             return
-        
+
         self.last_destination_folder = destination_folder
         settings.setValue("last_destination_folder", self.last_destination_folder)
-        
         output_org = settings.value("output_organization", "Flat", type=str)
         if output_org == "By Date":
+            destination_errors = []
+            for build in builds_to_package:
+                try:
+                    validate_package_destination(
+                        get_build_content_dir(build.folder), destination_folder
+                    )
+                except (OSError, PackagingError, ValueError) as exc:
+                    destination_errors.append(f"Build {build.part:02d}: {exc}")
+            if destination_errors:
+                show_error(
+                    self,
+                    "Packaging Validation Failed",
+                    "<br>".join(destination_errors),
+                    Qt.Vertical,
+                    InfoBarPosition.TOP_RIGHT,
+                    True,
+                    10000,
+                )
+                return
             date_str = date.today().strftime("%Y-%m-%d")
             destination_folder = os.path.join(destination_folder, date_str)
             try:
@@ -1540,17 +1555,14 @@ class DIMPackageGUI(QWidget):
                     "Error Creating Folder",
                     f"Could not create destination folder:\n{destination_folder}\n\nError: {e}"
                 )
-                self.package_all_button.setEnabled(True)
-                self.package_selected_button.setEnabled(self._hasCheckedBuilds())
-                self.extract_button.setEnabled(True)
-                self.clear_button.setEnabled(True)
                 return
-        
+
         build_specs = []
+        output_paths = []
+        preflight_errors = []
         for build in builds_to_package:
             build_data = get_build_data(self.session, build)
             content_dir = get_build_content_dir(build.folder)
-            
             spec = PackageSpec(
                 content_dir=content_dir,
                 store=build_data.get('store', ''),
@@ -1562,27 +1574,65 @@ class DIMPackageGUI(QWidget):
                 image_path=build_data.get('image_path', ''),
                 clean_support=self.support_clean_input.isChecked(),
                 guid=build.guid,
-                destination_folder=destination_folder
+                destination_folder=destination_folder,
+                recognized_content_roots=tuple(self.daz_folders),
             )
             build_specs.append((build, spec))
-        
+            try:
+                output_paths.append(validate_package_spec(spec))
+            except (OSError, PackagingError, ValueError) as exc:
+                preflight_errors.append(f"Build {build.part:02d}: {exc}")
+
+        folded_outputs = [os.path.normcase(os.path.abspath(path)) for path in output_paths]
+        if len(folded_outputs) != len(set(folded_outputs)):
+            preflight_errors.append("Multiple builds would create the same output file.")
+        if preflight_errors:
+            show_error(
+                self, "Packaging Validation Failed",
+                "<br>".join(preflight_errors), Qt.Vertical,
+                InfoBarPosition.TOP_RIGHT, True, 10000,
+            )
+            return
+
+        try:
+            with tempfile.NamedTemporaryFile(
+                    prefix=".dimcreator-write-test-", dir=destination_folder,
+                    delete=True):
+                pass
+        except OSError as exc:
+            show_error(self, "Destination Not Writable", str(exc))
+            return
+
+        existing_outputs = [path for path in output_paths if os.path.exists(path)]
+        if existing_outputs:
+            names = "\n".join(f"• {os.path.basename(path)}" for path in existing_outputs)
+            replace = QMessageBox.question(
+                self, "Replace Existing Packages?",
+                f"The following packages already exist:\n\n{names}\n\nReplace them?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if replace != QMessageBox.StandardButton.Yes:
+                return
+
+        approved_replacements = {
+            os.path.abspath(path).casefold() for path in existing_outputs
+        }
+        for (_, spec), output_path in zip(build_specs, output_paths):
+            spec.replace_existing = (
+                os.path.abspath(output_path).casefold() in approved_replacements
+            )
+
         progress_dialog = BatchProgressDialog(len(builds_to_package), self)
-        
-        for i, build in enumerate(builds_to_package):
+        for build in builds_to_package:
             part_label = f"Build {build.part:02d}"
             build_data = get_build_data(self.session, build)
             product_name = build_data.get('product_name', '') or "(No name)"
             progress_dialog.addBuildStatus('⏳', f"{part_label} - {product_name}")
-        
-        self.batch_packaging_worker = BatchPackagingWorker(build_specs, self.session, parent=self)
-        
-        self.package_all_button.setEnabled(False)
-        self.package_selected_button.setEnabled(False)
-        self.extract_button.setEnabled(False)
-        self.clear_button.setEnabled(False)
-        
+
+        self.batch_packaging_worker = BatchPackagingWorker(build_specs, parent=self)
+        self._setOperationState(OperationState.PACKAGING)
         batch_start_time = time.time()
-        
         self.batch_packaging_worker.overallProgress.connect(
             lambda current, total: progress_dialog.updateOverallProgress(current, total)
         )
@@ -1606,73 +1656,87 @@ class DIMPackageGUI(QWidget):
                 self._showBatchResults(summary, destination_folder, time.time() - batch_start_time)
             )
         )
-        self.batch_packaging_worker.cancelled.connect(
-            lambda: log.info("Batch packaging cancelled by user")
-        )
-        
         progress_dialog.cancelButton2.clicked.connect(
             lambda: self.batch_packaging_worker.requestCancellation()
         )
-        
         self.batch_packaging_worker.start()
-        
         progress_dialog.exec()
-        
-        if self.batch_packaging_worker and self.batch_packaging_worker.isRunning():
-            log.warning("Batch packaging worker still running after dialog closed; waiting for completion...")
-            self.batch_packaging_worker.wait()
-            log.info("Batch packaging worker finished")
-        
-        self.package_all_button.setEnabled(True)
-        self.package_selected_button.setEnabled(self._hasCheckedBuilds())
-        self.extract_button.setEnabled(True)
-        self.clear_button.setEnabled(True)
-        
-        self.saveSession()
-        
-        if self.batch_packaging_worker is not None:
-            self.batch_packaging_worker.deleteLater()
+        self._finalizeBatchWorkerWhenStopped()
+
+    def _finalizeBatchWorkerWhenStopped(self):
+        worker = getattr(self, "batch_packaging_worker", None)
+        if worker is not None and worker.isRunning():
+            QTimer.singleShot(50, self._finalizeBatchWorkerWhenStopped)
+            return
+        if worker is not None:
+            worker.deleteLater()
             self.batch_packaging_worker = None
-    
+        self.saveSession()
+        if self.operation_state is not OperationState.CLOSING:
+            self._setOperationState(OperationState.IDLE)
+
     def _validateBuildsForPackaging(self, builds):
         validation_results = []
-        
+
         for build in builds:
             issues = []
-            
             build_data = get_build_data(self.session, build)
-            
+
             if not build_data.get('store'):
                 issues.append("Missing Store")
             if not build_data.get('product_name'):
                 issues.append("Missing Product Name")
-            if not build_data.get('sku'):
-                issues.append("Missing SKU")
-            if not build_data.get('prefix'):
-                issues.append("Missing Prefix")
-            
             try:
-                uuid.UUID(build.guid)
-            except (ValueError, AttributeError):
+                validate_dim_prefix(build_data.get('prefix', ''))
+            except ValueError as exc:
+                issues.append(str(exc))
+            try:
+                validate_dim_sku(build_data.get('sku', ''))
+            except ValueError as exc:
+                issues.append(str(exc))
+            try:
+                validate_dim_part(build.part)
+            except ValueError as exc:
+                issues.append(str(exc))
+
+            visible_guid = build.guid
+            if build is self.current_build and hasattr(self, 'guid_input'):
+                visible_guid = self.guid_input.text()
+            if not _is_complete_guid(visible_guid):
                 issues.append("Invalid GUID format")
-            
+
+            tags = {
+                tag.strip().casefold()
+                for tag in build_data.get('tags', '').split(',')
+                if tag.strip()
+            }
+            if tags & {'plugin', 'software'}:
+                issues.append("Plugin/Software packages are not supported")
+
+            image_path = build_data.get('image_path', '')
+            if image_path and not os.path.isfile(image_path):
+                issues.append("Cover image is missing or unreadable")
+
             content_dir = get_build_content_dir(build.folder)
             content_has_files = False
-            if os.path.exists(content_dir):
-                try:
-                    entries = os.listdir(content_dir)
-                    visible_entries = [
-                        name for name in entries
-                        if not name.startswith('.') and name not in IGNORE_SYSTEM_FILES
-                    ]
-                    content_has_files = bool(visible_entries)
-                except OSError:
-                    # If content directory cannot be listed (permissions, I/O error), treat as having no files
-                    pass
-            
+            try:
+                inventory = PackageInventory.from_content(
+                    content_dir,
+                    clean_support=self.support_clean_input.isChecked(),
+                )
+                roots = {folder.casefold() for folder in self.daz_folders}
+                content_has_files = any(
+                    len(member.split('/')) >= 3
+                    and member.split('/')[0].casefold() == 'content'
+                    and member.split('/')[1].casefold() in roots
+                    for member in inventory.manifest_members
+                )
+            except (OSError, PackagingError, ValueError) as exc:
+                issues.append(str(exc))
+
             if not content_has_files:
-                issues.append("Content folder is empty")
-            
+                issues.append("No packageable file exists below a recognized DAZ folder")
+
             if not content_has_files:
                 status = 'empty'
             elif issues:
@@ -1719,15 +1783,11 @@ class DIMPackageGUI(QWidget):
             f"{summary['failed']} failed, {summary['skipped']} skipped"
         )
 
-    def DIMSuccessfullCreatedInfoBar(self):
-        show_success(self, "Success", "The DIM has been successfully created and saved.")
-
     def extractArchive(self):
-        if getattr(self, "extractionWorker", None) and self.extractionWorker.isRunning():
-            show_info(self, "Extraction running", "Please wait for the current extraction to finish.")
+        if not self.canMutateWorkspace():
+            show_info(self, "Busy", "Please wait for the current operation to finish.")
             return
 
-        self._extractionHadError = False
         archive_file_path, _ = QFileDialog.getOpenFileName(
             self, "Select Archive File", "", "Archive Files (*.zip *.rar *.7z)"
         )
@@ -1737,123 +1797,169 @@ class DIMPackageGUI(QWidget):
         self._processArchiveExtraction(archive_file_path)
 
     def dropExtractArchive(self, archive_file_path):
-        if getattr(self, "extractionWorker", None) and self.extractionWorker.isRunning():
-            show_info(self, "Extraction running", "Please wait for the current extraction to finish.")
+        if not self.canMutateWorkspace():
+            show_info(self, "Busy", "Please wait for the current operation to finish.")
             return
 
-        self._extractionHadError = False
         log.info("Extraction started from TreeView...")
 
         self._processArchiveExtraction(archive_file_path)
     
     def _processArchiveExtraction(self, archive_file_path):
+        self._setOperationState(OperationState.EXTRACTING)
+        self.showExtractionState(True)
+        worker = ArchivePlanningWorker(
+            archive_file_path,
+            tuple(self.daz_folders),
+            self.enable_template_detection,
+            parent=self,
+        )
+        self.archivePlanningWorker = worker
+        self._pending_planning_results += 1
+        worker.resultReady.connect(self._consumeArchivePlanningResult)
+        worker.finished.connect(
+            lambda worker=worker: self._onPlanningWorkerFinished(worker)
+        )
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _consumeArchivePlanningResult(self, result: ArchivePlanningResult):
         try:
-            scan_temp_dir = tempfile.mkdtemp(prefix='dim_archive_scan_')
-            
-            try:
-                # Extract once here just to scan for embedded archives;
-                # may be re-extracted later during the actual workflow.
-                patoolib.extract_archive(archive_file_path, outdir=scan_temp_dir)
-                log.info(f"Archive scanned: {archive_file_path}")
-                
-                embedded_archives = []
-                for root, _, files in os.walk(scan_temp_dir):
-                    for fname in files:
-                        if fname.lower().endswith(('.zip', '.rar', '.7z')):
-                            fpath = os.path.join(root, fname)
-                            embedded_archives.append(fpath)
-                
-                persistent_temp_dir = None
-                try:
-                    if embedded_archives:
-                        persistent_temp_dir = tempfile.mkdtemp(prefix='dim_embedded_')
-                        self._extraction_temp_dir = persistent_temp_dir
-                        persistent_archives = []
-                        
-                        for archive_path in embedded_archives:
-                            dest_path = os.path.join(persistent_temp_dir, os.path.basename(archive_path))
-                            shutil.copy2(archive_path, dest_path)
-                            persistent_archives.append(dest_path)
-                        
-                        embedded_archives = persistent_archives
-                    
-                    shutil.rmtree(scan_temp_dir, ignore_errors=True)
-                    
-                    content_archives, template_archives, ignored_archives = classify_archives(
-                        embedded_archives, self.enable_template_detection
-                    )
-                    
-                    if content_archives:
-                        content_archives, warning = detect_heuristic_ordering(content_archives)
-                    else:
-                        warning = None
-                except Exception:
-                    if persistent_temp_dir is not None and os.path.exists(persistent_temp_dir):
-                        shutil.rmtree(persistent_temp_dir, ignore_errors=True)
-                        if hasattr(self, '_extraction_temp_dir') and self._extraction_temp_dir == persistent_temp_dir:
-                            self._extraction_temp_dir = None
-                    raise
-                
-                should_show_dialog = (
-                    len(content_archives) > 1 or
-                    len(template_archives) > 0 or
-                    len(ignored_archives) > 0
-                )
-                
-                if not should_show_dialog and len(content_archives) == 1:
-                    # Re-extracts the archive (worker expects a file, not pre-extracted content).
-                    log.info("Single content archive detected, extracting directly...")
-                    if persistent_temp_dir is not None and os.path.exists(persistent_temp_dir):
-                        shutil.rmtree(persistent_temp_dir, ignore_errors=True)
-                        if hasattr(self, '_extraction_temp_dir') and self._extraction_temp_dir == persistent_temp_dir:
-                            self._extraction_temp_dir = None
-                    self._extractDirectly(archive_file_path)
-                elif len(content_archives) == 0 and len(embedded_archives) == 0:
-                    log.info("No embedded archives detected, extracting directly...")
-                    if persistent_temp_dir is not None and os.path.exists(persistent_temp_dir):
-                        shutil.rmtree(persistent_temp_dir, ignore_errors=True)
-                        if hasattr(self, '_extraction_temp_dir') and self._extraction_temp_dir == persistent_temp_dir:
-                            self._extraction_temp_dir = None
-                    self._extractDirectly(archive_file_path)
-                else:
-                    log.info("Multiple archives or templates/ignored detected, showing dialog...")
-                    self._showExtractionDialog(
-                        content_archives, template_archives, ignored_archives, warning
-                    )
-                    
-            except Exception as e:
-                if scan_temp_dir and os.path.isdir(scan_temp_dir):
-                    shutil.rmtree(scan_temp_dir, ignore_errors=True)
-                raise
-                
-        except Exception as e:
-            log.error(f"Failed to analyze archive: {e}")
-            self._extractDirectly(archive_file_path)
+            self._onArchivePlanningResult(result)
+        finally:
+            self._pending_planning_results = max(
+                0, getattr(self, "_pending_planning_results", 0) - 1
+            )
+            if self.operation_state is OperationState.CLOSING:
+                QTimer.singleShot(0, self._finishDeferredClose)
+
+    def _onArchivePlanningResult(self, result: ArchivePlanningResult):
+        if self.operation_state is OperationState.CLOSING:
+            if result.plan is not None:
+                result.plan.cleanup()
+            self._archive_import_plan = None
+            return
+
+        if not result.succeeded or result.plan is None:
+            if result.status == "cancelled":
+                self.showExtractionState(False, result.message, success=False)
+            else:
+                self.showExtractionState(False, result.message, success=False)
+                show_error(self, "Archive Analysis Failed", result.message)
+            if self.operation_state is not OperationState.CLOSING:
+                self._setOperationState(OperationState.IDLE)
+            return
+
+        plan = result.plan
+        self._archive_import_plan = plan
+        if plan.is_direct_content:
+            self._extractDirectly(plan)
+            return
+
+        archive_map = {
+            item.relative_path: item
+            for item in (
+                *plan.content_archives,
+                *plan.template_archives,
+                *plan.ignored_archives,
+            )
+        }
+        self._showExtractionDialog(
+            [item.relative_path for item in plan.content_archives],
+            [item.relative_path for item in plan.template_archives],
+            [item.relative_path for item in plan.ignored_archives],
+            plan.warning,
+            import_plan=plan,
+            archive_map=archive_map,
+        )
+
+    def _onPlanningWorkerFinished(self, worker):
+        if getattr(self, "archivePlanningWorker", None) is worker:
+            self.archivePlanningWorker = None
+            if (
+                self.operation_state is not OperationState.CLOSING
+                and getattr(self, "_archive_import_plan", None) is None
+            ):
+                self._setOperationState(OperationState.IDLE)
+
+    def _askConflictPolicy(self, conflicts):
+        conflicts = tuple(conflicts)
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Existing Files")
+        dialog.setText(
+            f"{len(conflicts)} existing file(s) conflict with this import."
+        )
+        preview = "\n".join(
+            f"• {os.path.basename(path)}" for path in conflicts[:5]
+        )
+        if len(conflicts) > 5:
+            preview += f"\n• … and {len(conflicts) - 5} more"
+        dialog.setInformativeText(
+            f"{preview}\n\nThis choice is applied once to the complete import. "
+            "Cancel is the safe default."
+        )
+        replace_button = dialog.addButton("Replace", QMessageBox.ButtonRole.DestructiveRole)
+        skip_button = dialog.addButton("Skip", QMessageBox.ButtonRole.ActionRole)
+        cancel_button = dialog.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        dialog.setDefaultButton(cancel_button)
+        dialog.exec()
+        clicked = dialog.clickedButton()
+        if clicked is replace_button:
+            return ConflictPolicy.REPLACE
+        if clicked is skip_button:
+            return ConflictPolicy.SKIP
+        return ConflictPolicy.CANCEL
+
+    def _onExtractionConflicts(self, conflicts):
+        worker = self.sender()
+        if (
+            worker is not getattr(self, "extractionWorker", None)
+            or self.operation_state is OperationState.CLOSING
+        ):
+            if worker is not None:
+                worker.resolveConflictPolicy(ConflictPolicy.CANCEL)
+            return
+
+        policy = self._askConflictPolicy(conflicts)
+        if self.operation_state is OperationState.CLOSING:
+            policy = ConflictPolicy.CANCEL
+        worker.resolveConflictPolicy(policy)
+
+    def _cancelPendingArchiveImport(self, message="Extraction cancelled."):
+        plan = getattr(self, "_archive_import_plan", None)
+        if plan is not None:
+            plan.cleanup()
+        self._archive_import_plan = None
+        self.showExtractionState(False, message, success=False)
+        if self.operation_state is not OperationState.CLOSING:
+            self._setOperationState(OperationState.IDLE)
     
-    def _extractDirectly(self, archive_file_path):
+    def _extractDirectly(self, import_plan):
+        self._setOperationState(OperationState.EXTRACTING)
         self.showExtractionState(True)
         log.info("Extraction started...")
 
         current_content_dir = get_build_content_dir(self.current_build.folder)
         w = ContentExtractionWorker(
-            archive_file_path,
-            set(self.daz_folders),
+            import_plan,
             current_content_dir,
-            self.enable_template_detection,
             self.template_destination,
-            parent=self
+            parent=self,
+            defer_finalize=True,
+            prompt_on_conflicts=True,
         )
         self.extractionWorker = w
-
-        w.extractionComplete.connect(self.onExtractionComplete)
-        w.extractionError.connect(self.onExtractionError)
-
-        w.finished.connect(self._cleanupExtractionWorker)
+        self._pending_extraction_results += 1
+        w.resultReady.connect(self._consumeExtractionResult)
+        w.conflictsDetected.connect(self._onExtractionConflicts)
+        w.finished.connect(self._finishExtractionWorker)
         w.finished.connect(w.deleteLater)
-
         w.start()
     
-    def _showExtractionDialog(self, content_archives, template_archives, ignored_archives, warning):
+    def _showExtractionDialog(
+        self, content_archives, template_archives, ignored_archives, warning,
+        *, import_plan, archive_map,
+    ):
         dialog = ExtractionDialog(
             content_archives,
             template_archives,
@@ -1875,150 +1981,215 @@ class DIMPackageGUI(QWidget):
             if not content_list and not template_list:
                 show_warning(self, "No Archives Selected", 
                            "No archives selected for extraction.")
-                if hasattr(self, '_extraction_temp_dir') and self._extraction_temp_dir:
-                    try:
-                        if os.path.isdir(self._extraction_temp_dir):
-                            shutil.rmtree(self._extraction_temp_dir, ignore_errors=True)
-                            log.info("Cleaned up extraction temp directory after no selection")
-                    except Exception as e:
-                        log.warning(f"Failed to cleanup temp directory: {e}")
-                    finally:
-                        self._extraction_temp_dir = None
+                self._cancelPendingArchiveImport("No archives were selected.")
                 return
-            
-            self._startMultiBuildExtraction(content_list, template_list)
+
+            try:
+                content_list = [archive_map[path] for path in content_list]
+                template_list = [archive_map[path] for path in template_list]
+            except KeyError as exc:
+                self._cancelPendingArchiveImport(
+                    "The archive selection could not be applied."
+                )
+                show_error(self, "Archive Selection Error", str(exc))
+                return
+
+            self._startMultiBuildExtraction(
+                content_list, template_list, import_plan=import_plan
+            )
         else:
             log.info("Extraction cancelled by user")
-            
-            if hasattr(self, '_extraction_temp_dir') and self._extraction_temp_dir:
-                try:
-                    if os.path.isdir(self._extraction_temp_dir):
-                        shutil.rmtree(self._extraction_temp_dir, ignore_errors=True)
-                        log.info(f"Cleaned up extraction temp directory after cancel")
-                except Exception as e:
-                    log.warning(f"Failed to cleanup temp directory: {e}")
-                finally:
-                    self._extraction_temp_dir = None
+            self._cancelPendingArchiveImport()
     
-    def _startMultiBuildExtraction(self, content_archives, template_archives):
+    def _startMultiBuildExtraction(
+        self, content_archives, template_archives, *, import_plan,
+    ):
+        self._setOperationState(OperationState.EXTRACTING)
         self.showExtractionState(True)
         log.info("Starting multi-build extraction...")
         
         w = MultiBuildExtractionWorker(
+            import_plan,
             content_archives,
             template_archives,
             set(self.daz_folders),
             self.session,
             self.enable_template_detection,
             self.template_destination,
-            parent=self
+            parent=self,
+            defer_finalize=True,
+            prompt_on_conflicts=True,
         )
         self.extractionWorker = w
-        
-        w.extractionComplete.connect(self.onMultiBuildExtractionComplete)
-        w.extractionError.connect(self.onExtractionError)
+        self._pending_extraction_results += 1
+        w.resultReady.connect(self._consumeExtractionResult)
+        w.conflictsDetected.connect(self._onExtractionConflicts)
         w.extractionProgress.connect(self.onExtractionProgress)
-        
-        w.finished.connect(self._cleanupExtractionWorker)
+        w.finished.connect(self._finishExtractionWorker)
         w.finished.connect(w.deleteLater)
-        
         w.start()
     
     def onExtractionProgress(self, message):
         log.info(f"Extraction progress: {message}")
-    
-    def onMultiBuildExtractionComplete(self, modified_builds):
-        if not self._extractionHadError:
-            self.showExtractionState(False, "Extraction completed successfully 😆", success=True)
-            log.info(f"Multi-build extraction completed. Modified builds: {modified_builds}")
-            
-            if hasattr(self, '_extraction_temp_dir') and self._extraction_temp_dir:
-                try:
-                    if os.path.isdir(self._extraction_temp_dir):
-                        shutil.rmtree(self._extraction_temp_dir, ignore_errors=True)
-                        log.info(f"Cleaned up extraction temp directory: {self._extraction_temp_dir}")
-                except Exception as e:
-                    log.warning(f"Failed to cleanup temp directory: {e}")
-                finally:
-                    self._extraction_temp_dir = None
-            
-            self.saveSession()
-            
-            self._revalidateAllBuildsStatus()
-            
-            self.buildListWidget.refreshList()
-            
-            self.fileExplorer.refresh_view()
-            
-            worker = self.sender()
-            copied = getattr(worker, "copiedTemplates", None)
-            if copied:
-                for templateName in copied:
-                    show_info(
-                        self, "Template Copied",
-                        f"Template <b>{templateName}</b> copied successfully.",
-                        Qt.Vertical, InfoBarPosition.BOTTOM_RIGHT
-                    )
-            
-            if len(modified_builds) > 0:
-                show_success(
-                    self, "Extraction Complete",
-                    f"Successfully extracted to {len(modified_builds)} build(s).",
-                    Qt.Vertical, InfoBarPosition.BOTTOM_RIGHT
+
+    def _retryExtractionRollback(
+        self, result: ExtractionResult
+    ) -> ExtractionRollbackError | None:
+        while result.rollback_pending:
+            try:
+                result.rollback()
+            except ExtractionRollbackError as exc:
+                self._pending_rollback_result = result
+                reply = QMessageBox.warning(
+                    self,
+                    "Rollback Incomplete",
+                    f"{exc}\n\nClose applications that may be using the affected "
+                    "files, then choose Retry. Cancel keeps DIM-Creator open "
+                    "and the workspace locked so you can retry by closing the "
+                    "app again.",
+                    QMessageBox.StandardButton.Retry
+                    | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Retry,
                 )
+                if reply != QMessageBox.StandardButton.Retry:
+                    return exc
+            else:
+                self._pending_rollback_result = None
+                return None
+        self._pending_rollback_result = None
+        return None
 
-    def _cleanupExtractionWorker(self):
-        w = getattr(self, "extractionWorker", None)
-        if not w:
-            return
+    def _consumeExtractionResult(self, result: ExtractionResult):
         try:
-            if w.isRunning():
-                w.requestInterruption()
-                w.wait(2000)
-        except Exception:
-            pass
-        self.extractionWorker = None
+            self._onExtractionResult(result)
+        finally:
+            self._pending_extraction_results = max(
+                0, getattr(self, "_pending_extraction_results", 0) - 1
+            )
+            if self.operation_state is OperationState.CLOSING:
+                QTimer.singleShot(0, self._finishDeferredClose)
 
-    def onExtractionComplete(self):
-        if not self._extractionHadError:
-            self.showExtractionState(False, "Extraction completed successfully 😆", success=True)
-            log.info("Extraction Process completed.")
-            self.fileExplorer.refresh_view()
-
-            worker = self.sender()
-            copied = getattr(worker, "copiedTemplates", None)
-            if copied:
-                for templateName in copied:
-                    show_info(
-                        self, "Template Copied",
-                        f"Template <b>{templateName}</b> copied successfully.",
-                        Qt.Vertical, InfoBarPosition.BOTTOM_RIGHT
+    def _onExtractionResult(self, result: ExtractionResult):
+        if result.succeeded:
+            session_snapshot = self.session.to_dict()
+            current_build_id = getattr(self.current_build, "id", "")
+            try:
+                for build_data in result.new_builds:
+                    build = Build.from_dict(build_data)
+                    if any(item.id == build.id for item in self.session.builds):
+                        raise ValueError(
+                            f"Extraction returned a duplicate build: {build.id}"
+                        )
+                    if len(self.session.builds) >= MAX_BUILDS:
+                        raise ValueError(
+                            f"A session can contain at most {MAX_BUILDS} builds"
+                        )
+                    self.session.builds.append(build)
+                if result.next_build_number is not None:
+                    self.session.next_build_number = result.next_build_number
+                self._revalidateAllBuildsStatus()
+                self.buildListWidget.setSession(self.session)
+                self.buildListWidget.refreshList()
+                self.fileExplorer.refresh_view()
+                if not self.saveSession():
+                    raise OSError("The imported session state could not be saved")
+                result.finalize()
+            except Exception as exc:
+                log.exception("Could not apply extraction result")
+                rollback_error = None
+                try:
+                    result.rollback()
+                except ExtractionRollbackError:
+                    log.exception("Could not roll back extracted files")
+                    rollback_error = self._retryExtractionRollback(result)
+                try:
+                    self.session = Session.from_dict(session_snapshot)
+                    self.current_build = next(
+                        (
+                            build for build in self.session.builds
+                            if build.id == current_build_id
+                        ),
+                        self.session.builds[0],
                     )
+                    self.buildListWidget.setSession(self.session)
+                    previous_block = self.buildListWidget.blockSignals(True)
+                    try:
+                        self.buildListWidget.selectBuild(self.current_build.id)
+                    finally:
+                        self.buildListWidget.blockSignals(previous_block)
+                    self.loadBuildIntoEditor(self.current_build)
+                    self.fileExplorer.setRootPath(
+                        get_build_content_dir(self.current_build.folder)
+                    )
+                    self.fileExplorer.refresh_view()
+                except Exception:
+                    log.exception("Could not restore the in-memory session after import failure")
+                message = str(exc)
+                if rollback_error is not None:
+                    message = f"{message}\n\n{rollback_error}"
+                result.status = "error"
+                result.message = message
+                result.errors.append(message)
+                self.showExtractionState(False, message, success=False)
+                show_error(self, "Extraction Result Error", message)
+                return
 
-    def onExtractionError(self, message):
-        self._extractionHadError = True
-        log.error(f"Extraction Error: {message}")
-        
-        if hasattr(self, '_extraction_temp_dir') and self._extraction_temp_dir:
-            try:
-                if os.path.isdir(self._extraction_temp_dir):
-                    shutil.rmtree(self._extraction_temp_dir, ignore_errors=True)
-                    log.info(f"Cleaned up extraction temp directory after error")
-            except Exception as e:
-                log.warning(f"Failed to cleanup temp directory: {e}")
-            finally:
-                self._extraction_temp_dir = None
-        
-        if self.stateTooltip:
-            try:
-                self.stateTooltip.close()
-            except Exception:
-                pass
-            self.stateTooltip = None
-        show_error(
-            self, "Extraction failed", message, Qt.Vertical,
-            InfoBarPosition.BOTTOM_RIGHT, True, 3000
-        )
+            self.showExtractionState(
+                False, "Extraction completed successfully", success=True
+            )
+            for template_name in result.copied_templates:
+                show_info(
+                    self, "Template Copied",
+                    f"Template <b>{template_name}</b> copied successfully.",
+                    Qt.Vertical, InfoBarPosition.BOTTOM_RIGHT,
+                )
+            show_success(
+                self, "Extraction Complete",
+                self._extractionSuccessMessage(result),
+                Qt.Vertical, InfoBarPosition.BOTTOM_RIGHT,
+            )
+        elif result.cancelled:
+            self.showExtractionState(False, result.message or "Cancelled", success=False)
+            show_info(self, "Extraction Cancelled", result.message or "Cancelled")
+        else:
+            rollback_error = None
+            if result.rollback_pending:
+                rollback_error = self._retryExtractionRollback(result)
+                if rollback_error is not None:
+                    result.message = f"{result.message}\n\n{rollback_error}"
+                    result.errors.append(str(rollback_error))
+            self.showExtractionState(False, result.message, success=False)
+            show_error(
+                self, "Extraction failed", result.message,
+                Qt.Vertical, InfoBarPosition.BOTTOM_RIGHT, True, 5000,
+            )
+
+    @staticmethod
+    def _extractionSuccessMessage(result: ExtractionResult) -> str:
+        if result.modified_builds:
+            return f"Successfully imported {len(result.modified_builds)} build(s)."
+        if result.copied_templates:
+            return (
+                "Successfully copied "
+                f"{len(result.copied_templates)} template archive(s)."
+            )
+        if result.skipped_files:
+            return (
+                "No files were imported; "
+                f"{len(result.skipped_files)} existing file(s) were skipped."
+            )
+        return "Import completed without file changes."
+
+    def _finishExtractionWorker(self):
+        worker = self.sender()
+        if getattr(self, "extractionWorker", None) is worker:
+            self.extractionWorker = None
+        self._archive_import_plan = None
+        if (
+            self.operation_state is not OperationState.CLOSING
+            and getattr(self, "_pending_rollback_result", None) is None
+        ):
+            self._setOperationState(OperationState.IDLE)
 
     def _close_tip(self, tip_attr):
         tip = getattr(self, tip_attr, None)
@@ -2080,6 +2251,9 @@ if __name__ == '__main__':
     app.setOrganizationName("Syst3mApps")
     app.setApplicationName("DIMCreator")
     app.setWindowIcon(QIcon(logo_path))
+    if "--smoke-test" in sys.argv:
+        print(f"DIM-Creator {APP_VERSION} smoke test passed")
+        sys.exit(0)
     ex = DIMPackageGUI()
     ex.show()
     sys.exit(app.exec())

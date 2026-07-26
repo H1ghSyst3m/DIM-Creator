@@ -20,6 +20,11 @@ ICON_BUTTON_SIZE = 24
 REORDER_BUTTON_SIZE = 32
 
 
+def _archive_display_name(path):
+    value = os.fspath(path).replace('\\', '/')
+    return value if not os.path.isabs(value) and '/' in value else os.path.basename(value)
+
+
 class ArchiveListItem(QWidget):
     
     moveRequested = Signal(str, str, str)  # archive_path, from_list, to_list
@@ -74,7 +79,7 @@ class ArchiveListItem(QWidget):
         
         layout.addSpacing(5)
         
-        basename = os.path.basename(archive_path)
+        basename = _archive_display_name(archive_path)
         if list_type == "content" and build_number is not None:
             label_text = f"{build_number}: {basename}"
         else:
@@ -317,7 +322,7 @@ class ExtractionDialog(MessageBoxBase):
         if self.content_archives:
             preview_parts.append(f"<b>Will create/append to {len(self.content_archives)} build(s):</b>")
             for i, archive_path in enumerate(self.content_archives, 1):
-                basename = os.path.basename(archive_path)
+                basename = _archive_display_name(archive_path)
                 
                 existing_build = self._findBuildByBuildNumber(i)
                 if existing_build:
@@ -331,14 +336,14 @@ class ExtractionDialog(MessageBoxBase):
             preview_parts.append("")
             preview_parts.append(f"<b>Will copy {len(self.template_archives)} template(s) to Downloads:</b>")
             for archive_path in self.template_archives:
-                basename = os.path.basename(archive_path)
+                basename = _archive_display_name(archive_path)
                 preview_parts.append(f"  • {basename}")
         
         if self.ignored_archives:
             preview_parts.append("")
             preview_parts.append(f"<b>Will ignore {len(self.ignored_archives)} archive(s):</b>")
             for archive_path in self.ignored_archives:
-                basename = os.path.basename(archive_path)
+                basename = _archive_display_name(archive_path)
                 preview_parts.append(f"  • {basename}")
         
         preview_html = "<br>".join(preview_parts)

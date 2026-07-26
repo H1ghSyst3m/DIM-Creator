@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+### Added
+- Added conflict handling for archive imports. Existing files can now be replaced, skipped, or the whole import can be cancelled.
+- Added automatic recovery for damaged session and configuration files using the latest valid backup.
+- Added persistent cover storage under `Documents/DIMCreator/Assets/Covers`.
+- Added support for the `3dsMax` product tag.
+- Added SBOM and SHA-256 checksum files to GitHub releases.
+
+### Changed
+- Reworked DIM package creation to use a temporary staging folder. Building a package no longer changes the original content folder.
+- Packages are now checked before they replace an existing ZIP. This includes the ZIP itself, its XML files, manifest entries, and filenames.
+- Package creation now always starts with a fresh ZIP, preventing old files from remaining in rebuilt packages.
+- Improved DIM filename validation for prefixes, SKUs, package parts, and product names.
+- `Ctrl+Enter`, `Ctrl+Return`, **Package All**, and **Package Selected** now use the same packaging process.
+- Reworked archive imports so files are checked before anything is extracted or copied.
+- ZIP files are now handled directly by the app. 7z and RAR files use controlled 7-Zip or UnRAR processes instead of `patool`.
+- Archive imports now have sensible limits for file count, unpacked size, nesting, compression ratio, and available disk space.
+- Archives found inside a DAZ content folder are kept as product files instead of being treated as another package.
+- Template detection now only matches the words `template` and `templates`, so `Temple*.zip` files remain product content.
+- Multipart archives are now checked for missing or duplicate parts.
+- Session data now uses build IDs instead of list positions, making build selection more reliable after deleting or reordering builds.
+- Sessions and configuration files are now saved atomically and keep up to ten backups.
+- The file explorer is now limited to the current build’s `Content` folder.
+- File and folder names are checked against Windows naming rules before they are created or renamed.
+- Deleted files are sent to the Windows Recycle Bin when possible. Permanent deletion requires another confirmation.
+- Cover images are saved as normalized JPEG files. Downloads are limited to 20 MiB, 40 megapixels, and 15 seconds.
+- Updated configuration defaults from `IM` to `LOCAL` for local products and corrected `3DX` to `D3X`.
+- Renamed the `LightWave` tag to `Lightwave`.
+- `Plugin` and `Software` tags are no longer accepted because the app currently creates content packages only.
+- Updated source requirements to Windows 10/11 x64 and Python 3.11–3.14.
+- Updated and pinned PySide6, PySide6-Fluent-Widgets, Pillow, and PyInstaller.
+- Removed `patool`, the optional QFluentWidgets `full` dependencies, broad PyInstaller module collection, and UPX compression.
+- Updated the GitHub Actions workflow to run tests before building and to use restricted permissions.
+
+### Fixed
+- Fixed empty sessions reusing the previous package GUID after restarting DIM-Creator.
+- Fixed incomplete GUID edits triggering session save errors before the entry was finished.
+- Fixed existing packages being overwritten when packaging failed or was cancelled.
+- Fixed invalid session values being used in package filenames and output paths.
+- Fixed case-insensitive filename collisions producing broken packages.
+- Fixed package destinations inside the managed build folder being accepted.
+- Fixed internal resource archives being extracted as wrapper packages.
+- Fixed failed archive imports leaving partially copied files or newly created builds behind.
+- Fixed extraction workers changing session data directly from background threads.
+- Fixed the application closing while packaging or extraction threads were still running.
+- Fixed **Save & Exit** closing the app when the session could not be saved.
+- Fixed damaged or newer session files being silently overwritten.
+- Fixed empty DAZ content folders being treated as valid product content.
+- Fixed removing a cover from Build 1 not clearing the saved cover value.
+- Fixed old cover downloads completing after a newer download was started.
+- Fixed closing the app changing the selected cover.
+- Fixed failed file replacements damaging the original destination file.
+
 ## v2.0.2
 
 ### Fixed
