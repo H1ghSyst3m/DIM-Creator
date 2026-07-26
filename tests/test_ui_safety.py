@@ -742,10 +742,31 @@ class SessionPreferenceAndGuidTests(unittest.TestCase):
                     expected,
                 )
 
-    def test_save_settings_keeps_the_last_nonempty_store(self):
-        memory = self.MemorySettings({"store_input": "DAZ 3D"})
+    def test_prefix_preference_uses_valid_value_or_local(self):
+        gui = SimpleNamespace()
+
+        for saved, expected in (
+            ("rdna", "RDNA"),
+            ("invalid-prefix", "LOCAL"),
+            ("", "LOCAL"),
+        ):
+            with self.subTest(saved=saved), patch.object(
+                app_module,
+                "settings",
+                self.MemorySettings({"prefix_input": saved}),
+            ):
+                self.assertEqual(
+                    DIMPackageGUI._preferredPrefixForNewSession(gui),
+                    expected,
+                )
+
+    def test_save_settings_keeps_the_last_nonempty_store_and_valid_prefix(self):
+        memory = self.MemorySettings(
+            {"store_input": "DAZ 3D", "prefix_input": "OLD"}
+        )
         gui = SimpleNamespace(
             store_input=SimpleNamespace(currentText=lambda: "Renderosity"),
+            prefix_input=SimpleNamespace(text=lambda: "rdna"),
             last_destination_folder=r"C:\Packages",
             use_store_prefix_checkbox=SimpleNamespace(isChecked=lambda: True),
         )
@@ -753,9 +774,11 @@ class SessionPreferenceAndGuidTests(unittest.TestCase):
         with patch.object(app_module, "settings", memory):
             DIMPackageGUI.saveSettings(gui)
             gui.store_input = SimpleNamespace(currentText=lambda: "   ")
+            gui.prefix_input = SimpleNamespace(text=lambda: "invalid-prefix")
             DIMPackageGUI.saveSettings(gui)
 
         self.assertEqual(memory.values["store_input"], "Renderosity")
+        self.assertEqual(memory.values["prefix_input"], "RDNA")
         self.assertEqual(memory.syncs, 2)
 
     def test_new_session_uses_preferred_store_without_replacing_its_guid(self):
@@ -767,6 +790,7 @@ class SessionPreferenceAndGuidTests(unittest.TestCase):
             session=None,
             current_build=None,
             _preferredStoreForNewSession=lambda: "Renderosity",
+            _preferredPrefixForNewSession=lambda: "RDNA",
             saveSession=lambda: saves.append(True) or True,
         )
 
@@ -782,6 +806,7 @@ class SessionPreferenceAndGuidTests(unittest.TestCase):
             DIMPackageGUI.loadSession(gui)
 
         self.assertEqual(session.builds[0].store, "Renderosity")
+        self.assertEqual(session.builds[0].prefix, "RDNA")
         self.assertEqual(session.builds[0].guid, original_guid)
         self.assertEqual(saves, [True])
 
@@ -794,6 +819,9 @@ class SessionPreferenceAndGuidTests(unittest.TestCase):
             current_build=None,
             _preferredStoreForNewSession=lambda: self.fail(
                 "loaded sessions must not consult the global store preference"
+            ),
+            _preferredPrefixForNewSession=lambda: self.fail(
+                "loaded sessions must not consult the global prefix preference"
             ),
             _isPristineSession=lambda: False,
             _revalidateAllBuildsStatus=lambda: None,

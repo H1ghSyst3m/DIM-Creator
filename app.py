@@ -166,6 +166,12 @@ class DIMPackageGUI(QWidget):
         store = self.store_input.currentText().strip()
         if store:
             settings.setValue("store_input", store)
+        try:
+            prefix = validate_dim_prefix(self.prefix_input.text())
+        except ValueError:
+            pass
+        else:
+            settings.setValue("prefix_input", prefix)
         settings.setValue("last_destination_folder", self.last_destination_folder)
         settings.setValue("auto_prefix", self.use_store_prefix_checkbox.isChecked())
         settings.sync()
@@ -176,6 +182,13 @@ class DIMPackageGUI(QWidget):
             if store.casefold() == preferred.casefold():
                 return store
         return self.storeitems[0] if self.storeitems else ""
+
+    def _preferredPrefixForNewSession(self) -> str:
+        preferred = settings.value("prefix_input", "", type=str)
+        try:
+            return validate_dim_prefix(preferred, fallback="LOCAL")
+        except ValueError:
+            return "LOCAL"
 
     def canMutateWorkspace(self) -> bool:
         return self.operation_state is OperationState.IDLE
@@ -342,8 +355,9 @@ class DIMPackageGUI(QWidget):
         first_build = self.session.builds[0]
         
         first_build.store = preserved_store.strip() or self._preferredStoreForNewSession()
-        if preserved_prefix:
-            first_build.prefix = preserved_prefix
+        first_build.prefix = (
+            preserved_prefix.strip() or self._preferredPrefixForNewSession()
+        )
         
         create_build_folder(first_build.folder)
         
@@ -490,6 +504,7 @@ class DIMPackageGUI(QWidget):
             log.info("No session found, creating new session with Build 1")
             self.session = create_default_session()
             self.session.builds[0].store = self._preferredStoreForNewSession()
+            self.session.builds[0].prefix = self._preferredPrefixForNewSession()
             
             create_build_folder(self.session.builds[0].folder)
             
