@@ -7,7 +7,6 @@
 - Added automatic recovery for damaged session and configuration files using the latest valid backup.
 - Added persistent cover storage under `Documents/DIMCreator/Assets/Covers`.
 - Added support for the `3dsMax` product tag.
-- Added more tests for packaging, archive extraction, sessions, file handling, covers, and application shutdown.
 - Added SBOM and SHA-256 checksum files to GitHub releases.
 
 ### Changed
@@ -20,7 +19,7 @@
 - ZIP files are now handled directly by the app. 7z and RAR files use controlled 7-Zip or UnRAR processes instead of `patool`.
 - Archive imports now have sensible limits for file count, unpacked size, nesting, compression ratio, and available disk space.
 - Archives found inside a DAZ content folder are kept as product files instead of being treated as another package.
-- Template detection now only matches the words `template` and `templates`.
+- Template detection now only matches the words `template` and `templates`, so `Temple*.zip` files remain product content.
 - Multipart archives are now checked for missing or duplicate parts.
 - Session data now uses build IDs instead of list positions, making build selection more reliable after deleting or reordering builds.
 - Sessions and configuration files are now saved atomically and keep up to ten backups.
@@ -37,25 +36,22 @@
 - Updated the GitHub Actions workflow to run tests before building and to use restricted permissions.
 
 ### Fixed
+- Fixed empty sessions reusing the previous package GUID after restarting DIM-Creator.
+- Fixed incomplete GUID edits triggering session save errors before the entry was finished.
 - Fixed existing packages being overwritten when packaging failed or was cancelled.
-- Fixed support cleanup and metadata generation changing files in the build folder.
 - Fixed invalid session values being used in package filenames and output paths.
 - Fixed case-insensitive filename collisions producing broken packages.
 - Fixed package destinations inside the managed build folder being accepted.
-- Fixed `Temple*.zip` files being incorrectly detected as templates.
 - Fixed internal resource archives being extracted as wrapper packages.
-- Fixed incomplete or duplicated multipart archives being accepted.
 - Fixed failed archive imports leaving partially copied files or newly created builds behind.
 - Fixed extraction workers changing session data directly from background threads.
 - Fixed the application closing while packaging or extraction threads were still running.
 - Fixed **Save & Exit** closing the app when the session could not be saved.
 - Fixed damaged or newer session files being silently overwritten.
-- Fixed build selection after deleting or reordering builds.
 - Fixed empty DAZ content folders being treated as valid product content.
 - Fixed removing a cover from Build 1 not clearing the saved cover value.
 - Fixed old cover downloads completing after a newer download was started.
 - Fixed closing the app changing the selected cover.
-- Fixed file explorer operations being able to reach another build or leave the current `Content` folder.
 - Fixed failed file replacements damaging the original destination file.
 
 ## v2.0.2

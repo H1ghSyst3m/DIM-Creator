@@ -25,7 +25,7 @@ from extraction_utils import (
     plan_archive_import,
 )
 from operation_state import OperationState
-from session import Build, create_default_session
+from session import Build, SessionLoadResult, create_default_session
 from utils import (
     has_reparse_component,
     move_to_trash,
@@ -55,9 +55,19 @@ class _StubImage(_StubWidget):
 class _StubTimer:
     def __init__(self):
         self.stopped = 0
+        self.started = 0
+        self.active = False
 
     def stop(self):
         self.stopped += 1
+        self.active = False
+
+    def start(self):
+        self.started += 1
+        self.active = True
+
+    def isActive(self):
+        return self.active
 
 
 class _StubEvent:
@@ -697,6 +707,268 @@ class OperationStateTests(unittest.TestCase):
         self.assertEqual(session.last_selected_build_id, second.id)
         self.assertEqual(loaded, [second])
         self.assertEqual(len(roots), 1)
+
+
+class SessionPreferenceAndGuidTests(unittest.TestCase):
+    class MemorySettings:
+        def __init__(self, values=None):
+            self.values = dict(values or {})
+            self.syncs = 0
+
+        def value(self, key, default=None, type=None):
+            return self.values.get(key, default)
+
+        def setValue(self, key, value):
+            self.values[key] = value
+
+        def sync(self):
+            self.syncs += 1
+
+    def test_store_preference_uses_configured_value_or_first_store(self):
+        gui = SimpleNamespace(storeitems=["DAZ 3D", "Renderosity"])
+
+        for saved, expected in (
+            ("renderosity", "Renderosity"),
+            ("Removed Store", "DAZ 3D"),
+            ("", "DAZ 3D"),
+        ):
+            with self.subTest(saved=saved), patch.object(
+                app_module,
+                "settings",
+                self.MemorySettings({"store_input": saved}),
+            ):
+                self.assertEqual(
+                    DIMPackageGUI._preferredStoreForNewSession(gui),
+                    expected,
+                )
+
+    def test_save_settings_keeps_the_last_nonempty_store(self):
+        memory = self.MemorySettings({"store_input": "DAZ 3D"})
+        gui = SimpleNamespace(
+            store_input=SimpleNamespace(currentText=lambda: "Renderosity"),
+            last_destination_folder=r"C:\Packages",
+            use_store_prefix_checkbox=SimpleNamespace(isChecked=lambda: True),
+        )
+
+        with patch.object(app_module, "settings", memory):
+            DIMPackageGUI.saveSettings(gui)
+            gui.store_input = SimpleNamespace(currentText=lambda: "   ")
+            DIMPackageGUI.saveSettings(gui)
+
+        self.assertEqual(memory.values["store_input"], "Renderosity")
+        self.assertEqual(memory.syncs, 2)
+
+    def test_new_session_uses_preferred_store_without_replacing_its_guid(self):
+        session = create_default_session()
+        original_guid = session.builds[0].guid
+        saves = []
+        gui = SimpleNamespace(
+            _session_warning="",
+            session=None,
+            current_build=None,
+            _preferredStoreForNewSession=lambda: "Renderosity",
+            saveSession=lambda: saves.append(True) or True,
+        )
+
+        with (
+            patch.object(
+                app_module,
+                "load_session_result",
+                return_value=SessionLoadResult(None, "new"),
+            ),
+            patch.object(app_module, "create_default_session", return_value=session),
+            patch.object(app_module, "create_build_folder"),
+        ):
+            DIMPackageGUI.loadSession(gui)
+
+        self.assertEqual(session.builds[0].store, "Renderosity")
+        self.assertEqual(session.builds[0].guid, original_guid)
+        self.assertEqual(saves, [True])
+
+    def test_loaded_session_store_is_not_replaced_by_global_preference(self):
+        session = create_default_session()
+        session.builds[0].store = "DAZ 3D"
+        gui = SimpleNamespace(
+            _session_warning="",
+            session=None,
+            current_build=None,
+            _preferredStoreForNewSession=lambda: self.fail(
+                "loaded sessions must not consult the global store preference"
+            ),
+            _isPristineSession=lambda: False,
+            _revalidateAllBuildsStatus=lambda: None,
+        )
+
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            patch.object(
+                app_module,
+                "load_session_result",
+                return_value=SessionLoadResult(session, "primary"),
+            ),
+            patch.object(
+                app_module,
+                "get_build_content_dir",
+                return_value=temp_dir,
+            ),
+        ):
+            DIMPackageGUI.loadSession(gui)
+
+        self.assertEqual(session.builds[0].store, "DAZ 3D")
+
+    def test_pristine_session_detection_is_conservative(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            content = Path(temp_dir)
+            session = create_default_session()
+            gui = SimpleNamespace(session=session)
+
+            with patch.object(
+                app_module, "get_build_content_dir", return_value=str(content)
+            ):
+                (content / "thumbs.DB").write_bytes(b"")
+                self.assertTrue(DIMPackageGUI._isPristineSession(gui))
+
+                (content / "product.duf").write_bytes(b"content")
+                self.assertFalse(DIMPackageGUI._isPristineSession(gui))
+                (content / "product.duf").unlink()
+
+                session.builds[0].product_name = "Product"
+                self.assertFalse(DIMPackageGUI._isPristineSession(gui))
+                session.builds[0].product_name = ""
+
+                session.builds.append(
+                    Build(
+                        id="build_002",
+                        folder="Build002",
+                        part=2,
+                        guid=str(app_module.uuid.uuid4()),
+                    )
+                )
+                self.assertFalse(DIMPackageGUI._isPristineSession(gui))
+                session.builds.pop()
+
+                with patch.object(app_module.os, "listdir", side_effect=OSError("locked")):
+                    self.assertFalse(DIMPackageGUI._isPristineSession(gui))
+
+    def test_loaded_pristine_session_gets_a_new_guid_without_immediate_save(self):
+        session = create_default_session()
+        original_guid = session.builds[0].guid
+        replacement = app_module.uuid.UUID("12345678-1234-4234-8234-123456789abc")
+        saves = []
+        gui = SimpleNamespace(
+            _session_warning="",
+            session=None,
+            current_build=None,
+            _revalidateAllBuildsStatus=lambda: None,
+            saveSession=lambda: saves.append(True) or True,
+        )
+        gui._isPristineSession = lambda: DIMPackageGUI._isPristineSession(gui)
+
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            patch.object(
+                app_module,
+                "load_session_result",
+                return_value=SessionLoadResult(session, "primary"),
+            ),
+            patch.object(
+                app_module,
+                "get_build_content_dir",
+                return_value=temp_dir,
+            ),
+            patch.object(app_module.uuid, "uuid4", return_value=replacement),
+        ):
+            DIMPackageGUI.loadSession(gui)
+
+        self.assertNotEqual(session.builds[0].guid, original_guid)
+        self.assertEqual(session.builds[0].guid, str(replacement))
+        self.assertEqual(saves, [])
+
+    def test_guid_edit_only_commits_complete_values(self):
+        session = create_default_session()
+        build = session.builds[0]
+        original_guid = build.guid
+        saves = []
+        gui = SimpleNamespace(
+            _loading_build=False,
+            current_build=build,
+            session=session,
+            canMutateWorkspace=lambda: True,
+            saveBuildFieldChanges=lambda: saves.append(True),
+        )
+
+        DIMPackageGUI.onGuidChanged(gui, "")
+        DIMPackageGUI.onGuidChanged(gui, "12345678-1234")
+        self.assertEqual(build.guid, original_guid)
+        self.assertEqual(saves, [])
+
+        replacement = "12345678-1234-4234-8234-123456789ABC"
+        DIMPackageGUI.onGuidChanged(gui, replacement)
+        self.assertEqual(build.guid, replacement)
+        self.assertEqual(saves, [True])
+
+    def test_other_field_changes_ignore_an_incomplete_visible_guid(self):
+        session = create_default_session()
+        build = session.builds[0]
+        original_guid = build.guid
+        timer = _StubTimer()
+        gui = SimpleNamespace(
+            _loading_build=False,
+            current_build=build,
+            session=session,
+            canMutateWorkspace=lambda: True,
+            store_input=SimpleNamespace(currentText=lambda: "DAZ 3D"),
+            product_name_input=SimpleNamespace(text=lambda: "Product"),
+            prefix_input=SimpleNamespace(text=lambda: "LOCAL"),
+            sku_input=SimpleNamespace(text=lambda: "123"),
+            product_tags_input=SimpleNamespace(text=lambda: "DAZStudio4_5"),
+            guid_input=SimpleNamespace(text=lambda: "12345678-1234"),
+            image_label=SimpleNamespace(imagePath=""),
+            daz_folders=["Runtime"],
+            _save_timer=timer,
+        )
+
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            patch.object(
+                app_module, "get_build_content_dir", return_value=temp_dir
+            ),
+            patch.object(app_module, "validate_build", return_value="incomplete"),
+        ):
+            DIMPackageGUI.saveBuildFieldChanges(gui)
+            saved_path = Path(temp_dir) / "session.json"
+            app_module.save_session(session, saved_path)
+            loaded = app_module.load_session_result(saved_path).session
+
+        self.assertEqual(build.product_name, "Product")
+        self.assertEqual(build.guid, original_guid)
+        self.assertEqual(loaded.builds[0].guid, original_guid)
+        self.assertEqual(timer.started, 1)
+
+    def test_packaging_validates_the_visible_guid_for_the_active_build(self):
+        session = create_default_session()
+        build = session.builds[0]
+        build.store = "DAZ 3D"
+        build.product_name = "Product"
+        build.prefix = "LOCAL"
+        build.sku = "123"
+        gui = SimpleNamespace(
+            session=session,
+            current_build=build,
+            guid_input=SimpleNamespace(text=lambda: "12345678-1234"),
+            support_clean_input=SimpleNamespace(isChecked=lambda: False),
+            daz_folders=["Runtime"],
+        )
+        inventory = SimpleNamespace(
+            manifest_members=("Content/Runtime/product.duf",)
+        )
+
+        with patch.object(
+            app_module.PackageInventory, "from_content", return_value=inventory
+        ):
+            result = DIMPackageGUI._validateBuildsForPackaging(gui, [build])
+
+        self.assertIn("Invalid GUID format", result[0]["issues"])
 
 
 class CoverPersistenceTests(unittest.TestCase):

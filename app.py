@@ -87,6 +87,15 @@ logo_path = resource_path(
 )
 
 
+def _is_complete_guid(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        return str(uuid.UUID(value)) == value.casefold()
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
 class DIMPackageGUI(QWidget):
     def __init__(self):
         super().__init__()
@@ -154,9 +163,19 @@ class DIMPackageGUI(QWidget):
         )
 
     def saveSettings(self):
+        store = self.store_input.currentText().strip()
+        if store:
+            settings.setValue("store_input", store)
         settings.setValue("last_destination_folder", self.last_destination_folder)
         settings.setValue("auto_prefix", self.use_store_prefix_checkbox.isChecked())
         settings.sync()
+
+    def _preferredStoreForNewSession(self) -> str:
+        preferred = settings.value("store_input", "", type=str).strip()
+        for store in self.storeitems:
+            if store.casefold() == preferred.casefold():
+                return store
+        return self.storeitems[0] if self.storeitems else ""
 
     def canMutateWorkspace(self) -> bool:
         return self.operation_state is OperationState.IDLE
@@ -228,36 +247,40 @@ class DIMPackageGUI(QWidget):
         self._close_ready = True
         self.close()
 
+    def _isPristineSession(self) -> bool:
+        if not self.session or len(self.session.builds) != 1:
+            return False
+
+        build = self.session.builds[0]
+        for field in ('product_name', 'sku', 'image_path'):
+            value = get_effective_value(self.session, build, field)
+            if value and value.strip():
+                return False
+
+        try:
+            content_dir = get_build_content_dir(build.folder)
+            if os.path.exists(content_dir):
+                ignored = {name.casefold() for name in IGNORE_SYSTEM_FILES}
+                entries = (
+                    entry for entry in os.listdir(content_dir)
+                    if entry.casefold() not in ignored
+                )
+                if next(entries, None) is not None:
+                    return False
+        except OSError as exc:
+            log.warning(
+                "Error checking content directory for %s: %s",
+                build.folder,
+                exc,
+            )
+            return False
+
+        return True
+
     def hasUserMadeChanges(self) -> bool:
         if not self.session or not self.session.builds:
             return False
-        
-        if len(self.session.builds) > 1:
-            return True
-        
-        for build in self.session.builds:
-            product_name = get_effective_value(self.session, build, 'product_name')
-            if product_name and product_name.strip():
-                return True
-            
-            sku = get_effective_value(self.session, build, 'sku')
-            if sku and sku.strip():
-                return True
-            
-            image_path = get_effective_value(self.session, build, 'image_path')
-            if image_path and image_path.strip():
-                return True
-            
-            try:
-                content_dir = get_build_content_dir(build.folder)
-                if os.path.exists(content_dir):
-                    entries = [e for e in os.listdir(content_dir) if e not in IGNORE_SYSTEM_FILES]
-                    if entries:
-                        return True
-            except OSError as e:
-                log.warning(f"Error checking content directory for {build.folder}: {e}")
-        
-        return False
+        return not self._isPristineSession()
 
     def performSessionCleanup(self) -> tuple[bool, list[str]]:
         try:
@@ -318,8 +341,7 @@ class DIMPackageGUI(QWidget):
         self.session = create_default_session()
         first_build = self.session.builds[0]
         
-        if preserved_store:
-            first_build.store = preserved_store
+        first_build.store = preserved_store.strip() or self._preferredStoreForNewSession()
         if preserved_prefix:
             first_build.prefix = preserved_prefix
         
@@ -467,6 +489,7 @@ class DIMPackageGUI(QWidget):
         if self.session is None:
             log.info("No session found, creating new session with Build 1")
             self.session = create_default_session()
+            self.session.builds[0].store = self._preferredStoreForNewSession()
             
             create_build_folder(self.session.builds[0].folder)
             
@@ -480,6 +503,9 @@ class DIMPackageGUI(QWidget):
                 if not os.path.exists(content_dir):
                     log.warning(f"Build folder missing: {build.folder}, recreating")
                     create_build_folder(build.folder)
+
+            if self._isPristineSession():
+                self.session.builds[0].guid = str(uuid.uuid4())
 
             self._revalidateAllBuildsStatus()
         
@@ -647,8 +673,6 @@ class DIMPackageGUI(QWidget):
         set_field_override(self.session, self.current_build, 'prefix', self.prefix_input.text())
         set_field_override(self.session, self.current_build, 'sku', self.sku_input.text())
         set_field_override(self.session, self.current_build, 'tags', self.product_tags_input.text())
-        
-        self.current_build.guid = self.guid_input.text() if hasattr(self, 'guid_input') else self.current_build.guid
         
         if hasattr(self, 'image_label'):
             image_path = self.image_label.imagePath
@@ -875,13 +899,17 @@ class DIMPackageGUI(QWidget):
             log.error(f"Error syncing to all parts: {e}")
             show_error(self, "Sync Failed", f"Failed to sync to all parts: {str(e)}")
     
-    def onGuidChanged(self):
+    def onGuidChanged(self, guid: str):
         if self._loading_build:
             return
         if not self.canMutateWorkspace():
             return
-        if self.current_build and self.session:
-            self.saveBuildFieldChanges()
+        if not self.current_build or not self.session:
+            return
+        if not _is_complete_guid(guid):
+            return
+        self.current_build.guid = guid
+        self.saveBuildFieldChanges()
     
     def onImageChanged(self, image_path):
         if self._loading_build:
@@ -1656,9 +1684,10 @@ class DIMPackageGUI(QWidget):
             except ValueError as exc:
                 issues.append(str(exc))
 
-            try:
-                uuid.UUID(build.guid)
-            except (ValueError, AttributeError, TypeError):
+            visible_guid = build.guid
+            if build is self.current_build and hasattr(self, 'guid_input'):
+                visible_guid = self.guid_input.text()
+            if not _is_complete_guid(visible_guid):
                 issues.append("Invalid GUID format")
 
             tags = {
