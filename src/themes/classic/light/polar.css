@@ -1,0 +1,31 @@
+:root[data-theme="polar"], .theme-swatch[data-theme="polar"] {
+  color-scheme: light;
+  --background: #edf2fa;
+  --sidebar: #e6edf8;
+  --surface: #fff;
+  --raised: #e8eef8;
+  --hover: #e1e9f5;
+  --input: #f7f9fe;
+  --line: #cad6e8;
+  --soft-line: #dfe7f2;
+  --text: #1b2940;
+  --muted: #53647b;
+  --faint: #536780;
+  --accent: #35549f;
+  --accent-text: #fff;
+  --accent-surface: #dce7f9;
+  --accent-line: #627ca8;
+  --group-surface: #e9f0fb;
+  --success: #226f4f;
+  --success-surface: #e0f1e8;
+  --warning: #885a14;
+  --warning-surface: #f7ecd6;
+  --error: #b13d43;
+  --error-surface: #fbe8e9;
+  --blue: #35549f;
+  --folder-icon: #7a6037;
+  --backdrop: #101d3580;
+  --shadow: 0 24px 80px #1b294024;
+  --popup-shadow: 0 12px 35px #1b294033;
+  --drag-shadow: 0 6px 24px #1b29402b;
+}

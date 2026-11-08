@@ -1,0 +1,31 @@
+:root[data-theme="sand"], .theme-swatch[data-theme="sand"] {
+  color-scheme: light;
+  --background: #f7f3ea;
+  --sidebar: #f0e9dd;
+  --surface: #fffefa;
+  --raised: #f1e9dc;
+  --hover: #ece1d2;
+  --input: #fcf8f1;
+  --line: #d6c9b8;
+  --soft-line: #e8ded0;
+  --text: #302b25;
+  --muted: #655d53;
+  --faint: #6d6458;
+  --accent: #815436;
+  --accent-text: #fff;
+  --accent-surface: #f3e5d5;
+  --accent-line: #9b7354;
+  --group-surface: #f5ece0;
+  --success: #296d49;
+  --success-surface: #e5efe4;
+  --warning: #875917;
+  --warning-surface: #f5ead5;
+  --error: #af3e35;
+  --error-surface: #f8e5e1;
+  --blue: #446780;
+  --folder-icon: #85623d;
+  --backdrop: #28201580;
+  --shadow: 0 24px 80px #302b2524;
+  --popup-shadow: 0 12px 35px #302b2533;
+  --drag-shadow: 0 6px 24px #302b252b;
+}

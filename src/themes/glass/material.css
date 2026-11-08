@@ -1,0 +1,121 @@
+[data-theme-category="glass"] {
+  --glass-canvas: radial-gradient(ellipse at 18% 28%, var(--glass-light-a), transparent 55%), radial-gradient(ellipse at 85% 75%, var(--glass-light-b), transparent 55%), var(--background);
+  --glass-panel-blur: 16px;
+  --glass-floating-blur: 6px;
+  --glass-popup-blur: 4px;
+}
+
+@media (forced-colors: none) {
+  :root[data-theme-category="glass"] { background: var(--glass-canvas); }
+  :root[data-theme-category="glass"] input:not([type="checkbox"]):not([type="radio"]),
+  :root[data-theme-category="glass"] .single-select-trigger,
+  :root[data-theme-category="glass"] .tag-control {
+    border-color: var(--accent-line);
+  }
+  :root[data-theme-category="glass"] input:not([type="checkbox"]):not([type="radio"])[data-warning="true"] {
+    border-color: var(--warning);
+  }
+
+  /* A miniature pane across the same canvas, rather than three opaque color chips. */
+  .theme-swatch[data-theme-category="glass"] {
+    position: relative;
+    background: var(--glass-canvas);
+    border-color: var(--line);
+    overflow: hidden;
+  }
+  .theme-swatch[data-theme-category="glass"]::before {
+    content: "";
+    position: absolute;
+    inset: 20% 16% -20% 20%;
+    border: 1px solid var(--glass-edge);
+    border-radius: 3px;
+    background: var(--surface);
+    box-shadow: var(--glass-panel-shadow);
+  }
+  .theme-swatch[data-theme-category="glass"] i { visibility: hidden; }
+  .theme-swatch[data-theme-category="glass"] i:last-child {
+    visibility: visible;
+    position: absolute;
+    inset: 47% 24% 18% 56%;
+  }
+
+  /* Without blur support the normal opaque palette remains the surface fallback. */
+  @supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .theme-swatch[data-theme-category="glass"]::before {
+      background: var(--glass-panel);
+      -webkit-backdrop-filter: blur(2px);
+      backdrop-filter: blur(2px);
+    }
+    :root[data-theme-category="glass"] .panel,
+    :root[data-theme-category="glass"] .app-header,
+    :root[data-theme-category="glass"] .output-bar,
+    :root[data-theme-category="glass"] .status-bar,
+    :root[data-theme-category="glass"] .mobile-tabs {
+      position: relative;
+      background: transparent;
+    }
+    /* Filters stay on decoration, never on ancestors of fixed drag labels or modal popups. */
+    :root[data-theme-category="glass"] .panel::before,
+    :root[data-theme-category="glass"] .app-header::before,
+    :root[data-theme-category="glass"] .output-bar::before,
+    :root[data-theme-category="glass"] .status-bar::before,
+    :root[data-theme-category="glass"] .mobile-tabs::before,
+    :root[data-theme-category="glass"] dialog::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+      border-radius: inherit;
+      background: var(--glass-panel);
+      -webkit-backdrop-filter: blur(var(--glass-panel-blur));
+      backdrop-filter: blur(var(--glass-panel-blur));
+      box-shadow: var(--glass-panel-shadow);
+    }
+    :root[data-theme-category="glass"] .app-header::before,
+    :root[data-theme-category="glass"] .output-bar::before,
+    :root[data-theme-category="glass"] .status-bar::before,
+    :root[data-theme-category="glass"] .mobile-tabs::before {
+      background: var(--glass-chrome);
+    }
+    :root[data-theme-category="glass"] .panel-divider { background: transparent; }
+    :root[data-theme-category="glass"] dialog {
+      background: transparent;
+      border-color: var(--glass-edge);
+    }
+    :root[data-theme-category="glass"] dialog::before {
+      background: var(--glass-floating);
+      -webkit-backdrop-filter: blur(var(--glass-floating-blur));
+      backdrop-filter: blur(var(--glass-floating-blur));
+    }
+    :root[data-theme-category="glass"] dialog::backdrop {
+      -webkit-backdrop-filter: none;
+      backdrop-filter: none;
+    }
+    :root[data-theme-category="glass"] .dialog-head,
+    :root[data-theme-category="glass"] .dialog-footer,
+    :root[data-theme-category="glass"] .settings-nav {
+      background: transparent;
+    }
+    :root[data-theme-category="glass"] .sync-box,
+    :root[data-theme-category="glass"] .sync-field-grid {
+      background: color-mix(in srgb, var(--input) 50%, transparent);
+    }
+    /* Popups scroll themselves; their material must not scroll away with a pseudo-element. */
+    :root[data-theme-category="glass"] .popup {
+      background: var(--glass-popup);
+      border-color: var(--glass-edge);
+      -webkit-backdrop-filter: blur(var(--glass-popup-blur));
+      backdrop-filter: blur(var(--glass-popup-blur));
+    }
+  }
+}
+
+@media (forced-colors: active) {
+  :root[data-theme-category="glass"],
+  .theme-swatch[data-theme-category="glass"] { background: Canvas; }
+  :root[data-theme-category="glass"] dialog::backdrop {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}

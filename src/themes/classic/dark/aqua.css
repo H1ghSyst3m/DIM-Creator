@@ -1,0 +1,27 @@
+:root, :root[data-theme="dark"], .theme-swatch[data-theme="dark"] {
+  color-scheme: dark;
+  --background: #101820;
+  --group-surface: #18272d;
+  --sidebar: #171c1e;
+  --surface: #1b2124;
+  --raised: #22292d;
+  --hover: #272f33;
+  --input: #141a1d;
+  --line: #30383d;
+  --soft-line: #272f33;
+  --text: #edf1ef;
+  --muted: #a3b0b5;
+  --faint: #8c9ba2;
+  --accent: #65cad4;
+  --accent-text: #102a30;
+  --accent-surface: #203d43;
+  --accent-line: #5a8f99;
+  --success: #b6e5c6;
+  --success-surface: #25392f;
+  --warning: #ebc17a;
+  --warning-surface: #352e22;
+  --error: #edaaa3;
+  --error-surface: #3d2929;
+  --blue: #9dbcd5;
+  --shadow: 0 24px 80px #0007;
+}

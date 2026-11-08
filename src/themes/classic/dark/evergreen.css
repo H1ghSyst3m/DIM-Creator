@@ -1,0 +1,31 @@
+:root[data-theme="evergreen"], .theme-swatch[data-theme="evergreen"] {
+  color-scheme: dark;
+  --background: #101b18;
+  --sidebar: #15231c;
+  --surface: #1a2923;
+  --raised: #25362d;
+  --hover: #2c4034;
+  --input: #14221c;
+  --line: #3d5146;
+  --soft-line: #2d4237;
+  --text: #eef4f0;
+  --muted: #c5d5ca;
+  --faint: #a7bcaf;
+  --accent: #e3b779;
+  --accent-text: #2c2114;
+  --accent-surface: #3c3428;
+  --accent-line: #a48a62;
+  --group-surface: #20362b;
+  --success: #aae2c1;
+  --success-surface: #254336;
+  --warning: #ffab83;
+  --warning-surface: #49352b;
+  --error: #ffaaa8;
+  --error-surface: #482d2d;
+  --blue: #a5c9d5;
+  --folder-icon: #c5bb8b;
+  --backdrop: #07110d88;
+  --shadow: 0 24px 80px #0007;
+  --popup-shadow: 0 12px 35px #0005;
+  --drag-shadow: 0 6px 24px #0004;
+}

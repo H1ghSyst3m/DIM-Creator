@@ -1,0 +1,7 @@
+[workspace]
+members = ["core", "src-tauri"]
+resolver = "3"
+
+[workspace.package]
+version = "3.0.0"
+license = "AGPL-3.0-only"

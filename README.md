@@ -1,137 +1,69 @@
-# DIM-Creator
+# DIM Creator
 
-*A Windows desktop app for building DAZ Install Manager (DIM) packages.*
+DIM Creator turns DAZ Studio content on your PC into ZIP packages for DAZ Install Manager (DIM). Use it to package a local folder, bring in content from an archive, or prepare several products at once.
 
-![Python](https://img.shields.io/badge/Python-3.11--3.14-blue)
-![PySide6](https://img.shields.io/badge/GUI-PySide6-brightgreen)
-![OS](https://img.shields.io/badge/OS-Windows-lightgrey)
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-orange.svg)](LICENSE)
-[![Total Downloads](https://img.shields.io/github/downloads/H1ghSyst3m/DIM-Creator/total)](https://github.com/H1ghSyst3m/DIM-Creator/releases)
-[![Latest Release Downloads](https://img.shields.io/github/downloads/H1ghSyst3m/DIM-Creator/latest/total)](https://github.com/H1ghSyst3m/DIM-Creator/releases/latest)
-
-DIM-Creator prepares DAZ Studio content for DAZ Install Manager. It stages your content, creates the required DIM metadata files, adds a cover image, and writes the final DIM-ready `.zip`.
-
-## Features
-
-- Build one DIM package or manage several builds in the same session.
-- Reuse metadata from Build001, with per-build overrides when needed.
-- Package all builds with **Package All** or only checked builds with **Package Selected**.
-- Import `.zip`, `.rar`, and `.7z` archives through **Extract Archive**.
-- Drag and drop files, folders, archives, and cover images.
-- Save sessions, stores, tags, and DAZ folder settings between launches.
-- Reorder builds by dragging them; part numbers update automatically.
-- Keep build status visible so incomplete or empty builds are easy to spot.
-
-## Requirements
-
-- Windows 10 or 11 (x64)
-- Python 3.11–3.14 when running from source
-- 7-Zip or UnRAR in `PATH` for `.rar` and `.7z` extraction
-
-Plain `.zip` archives work without an external extractor. For `.rar` and `.7z`, install [7-Zip](https://www.7-zip.org/) or UnRAR and make sure the executable is available from your terminal.
+The 3.0 rewrite replaces the Python/PySide6 app with Rust, Tauri and React/TypeScript. The old source, build instructions and changelog are in the [legacy archive](legacy/README.md).
 
 ## Download
 
-1. Download the latest release from [GitHub Releases](https://github.com/H1ghSyst3m/DIM-Creator/releases/latest).
-2. Extract the release archive.
-3. Run `DIM-Creator.exe`.
+On Windows x64, download `DIM-Creator_<version>_x64-setup.exe` and run it. The app needs Microsoft Edge WebView2 Runtime. Compare the installer's SHA-256 hash with `SHA256SUMS.txt` from the same release to check the download. [GitHub Releases](https://github.com/H1ghSyst3m/DIM-Creator/releases)
 
-Windows SmartScreen may warn about an unknown publisher. If you trust the download source, choose **More info** and then **Run anyway**.
+For a fresh per-user installation, Setup uses `%LOCALAPPDATA%\DIM Creator` by default.
 
-## Quick Start
+If the setup file isn't listed yet, follow the source build instructions below.
 
-1. Launch DIM-Creator. The first build is created at `Documents/DIMCreator/Builds/Build001/Content`.
-2. Choose a store, enter the product name and SKU, and add a cover image if you have one.
-3. Add DAZ content to the current build's `Content` folder by dragging files in or using **Extract Archive**.
-4. Check the build status. A package needs content plus the required metadata fields.
-5. Click **Package All** to build every package, or **Package Selected** to build only checked items.
+## Build your first DIM package
 
-The finished DIM package is a `.zip` containing the staged content, generated manifest files, support metadata, and cover image.
+1. Click **+ Product** in the worklist. Enter the product name and an SKU of 1–8 digits greater than zero. Choose the store and add a cover image if you want one.
+2. In **Files**, add the content with **Add files**, **Add folders**, or drag and drop. Put folders such as `data`, `People` and `Runtime` directly under the package's `Content` folder, as they would appear at the top of your DAZ Studio library.
+3. Choose an **Output folder** at the bottom. Click **Build this package**, or tick several packages and use **Build selection**. Review the export and confirm. With **By date** selected, look for the ZIP in the dated subfolder of your output folder.
+4. Copy the finished ZIP into the **Package Archive** folder configured in DAZ Install Manager. Refresh DIM and look under **Ready to Install**. Check the destination library before installing. [DAZ Install Manager guide](https://docs.daz3d.com/public/software/install_manager/userguide/use_install_manager/tutorials/installing_with_install_manager/start)
 
-## Common Workflows
+The ZIP contains `Manifest.dsx`, `Supplement.dsx` and the selected files under `Content/`. The filename is based on the package prefix, SKU, part number and product name.
 
-### Single Build
+If an export is blocked, open **Package validation** from the package status. It shows which fields or files need attention. For a content warning, check the folders under `Content` and the **Settings → DAZ folders** list.
 
-Use Build001 for one product or package part. Add the DAZ folders, fill in the product fields, and click **Package All**.
+## Import archives and templates
 
-### Multiple Builds
+Use **Import** in the worklist to bring in ZIP, RAR or 7z archives, including archives inside archives. Use **Extract archive…** in **Files** to start with the current package as the destination. The import dialog shows what it found and lets you choose a new or existing package. Check the assignments and file conflicts before you start the import.
 
-Use **+ Add Build** to create Build002, Build003, and so on. New builds inherit shared fields from Build001, but you can override values such as SKU, product name, tags, or cover image on each build.
+To keep an archive for later, set **Settings → General → Template folder**, then choose **Save as template** for that archive in the import dialog. DIM Creator copies the archive to the template folder when you confirm the import.
 
-Use **Sync to All Builds** when you want Build001 to push shared metadata to the other builds. Use **Sync from Build 1** on a child build when you want to discard its overrides and return to the inherited values.
+## Working with several packages
 
-### Archive Imports
+Tick related packages and click **Group** to keep them together in the worklist. Use **Synchronize…** in the group's menu to choose a source package, the metadata to copy, and whether to renumber parts. Preview the changes before applying them. You can still edit or export any package on its own.
 
-Use **Extract Archive** for `.zip`, `.rar`, or `.7z` files. The extraction dialog lets you separate template archives, content archives, and ignored files, then assign content archives to the correct build.
+Set your usual store and tags in **Settings** for new packages. Use the theme menu to choose a Classic or Glass theme, or click the pin to keep DIM Creator above other windows while moving files around.
 
-## Data Locations
+## Where your work is saved
 
-- **Build workspaces:** `Documents/DIMCreator/Builds/Build001/Content`, `Build002/Content`, etc.
-- **Session file:** `Documents/DIMCreator/Sessions/session.json`
-- **Session backups:** `Documents/DIMCreator/Sessions/backups`
-- **Logs:** `Documents/DIMCreator/Logs`
-- **Config files:** `Documents/DIMCreator/Config`
-- **Managed cover images:** `Documents/DIMCreator/Assets/Covers`
+Open `%LOCALAPPDATA%\com.dimcreator` in File Explorer to find your package drafts, copied content, covers, worklist and settings. Close DIM Creator before backing up that folder. Exported ZIPs go to the output folder you chose.
 
-Custom stores, tags, folder settings, and saved sessions are kept outside the application folder so they survive app updates.
+The Python app uses `Documents\DIMCreator`.
 
-## Run from Source
+## Build from source
+
+You need Node.js 24, Rust stable with the Windows MSVC toolchain, and Visual Studio C++ Build Tools with the Windows SDK. Install the Rust `rustfmt` and `clippy` components to run the CI checks.
+
+From the repository root, install the dependencies and start the app.
 
 ```powershell
-git clone https://github.com/H1ghSyst3m/DIM-Creator.git
-cd DIM-Creator
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-python app.py
+npm ci
+npm run tauri -- dev
 ```
 
-To build the Windows executable locally:
+To build the installer, run `npm run tauri -- build --ci -- --locked`. The setup file is in `target/release/bundle/nsis/`.
 
-```powershell
-pip install -r requirements-build.txt
-pyinstaller -y DIM-Creator.spec
-```
+## Project layout
 
-Release and CI environments install the fully resolved, hash-verified
-`requirements-win.lock`. Regenerate it for Windows/Python 3.11 after changing
-any direct requirement.
+| Directory | What it contains |
+|---|---|
+| `core/` | Rust workspace storage, archive import, validation and DIM package generation |
+| `src-tauri/` | Native Windows integration, commands exposed to the UI and NSIS configuration |
+| `src/` | React UI, translations, themes and frontend tests |
 
-## Keyboard Shortcuts
+Run `npm test` for the frontend and `cargo test --workspace --locked` for Rust. `src/bindings.ts` holds the types shared with the Rust commands. Regenerate it with `npm run bindings:generate` after changing a Rust request or response type. `npm run bindings:check` verifies the committed file.
 
-### Main Window
+For a release, run `npm run version:bump -- 3.0.1` with Python 3.11 or newer available as `python`. Add the matching release notes to the [changelog](CHANGELOG.md), then commit, tag and push separately. See `npm run version:bump -- --help` for details. The release workflow checks the tag, project versions and changelog before building.
 
-- `Ctrl+G` - Generate GUID
-- `Ctrl+Enter` - Generate a DIM package for the current build
-- `Ctrl+N` - Clear fields and clean the current build folder
-
-### File Explorer
-
-- `Ctrl+E` - Open the current folder in Windows Explorer
-- `Delete` - Delete the selected file or folder
-- `Ctrl+C` / `Ctrl+X` / `Ctrl+V` - Copy, cut, or paste files
-- `F2` - Rename the selected item
-- `F5` - Refresh the file tree
-
-## Troubleshooting
-
-- **`.rar` or `.7z` archives do not extract:** Install 7-Zip or UnRAR and add it to `PATH`.
-- **The app reports no DAZ folders:** The content should include folders such as `data`, `People`, or `Runtime`.
-- **SmartScreen blocks the executable:** Use **More info** and **Run anyway** if you trust the release download.
-- **A build is incomplete:** Check that it has content, store, product name, SKU, and a valid GUID.
-
-## Screenshot
-
-<p align="center">
-  <img width="1092" height="830" alt="DIM-Creator main window" src="docs/images/main-window.png" />
-</p>
-
-## Contributing
-
-Bug reports and focused pull requests are welcome. Please use the issue tracker for bugs, questions, and feature ideas.
-
-## License
-
-DIM-Creator is licensed under the GNU GPL v3. See [LICENSE](LICENSE).
-
-<sub>"DAZ" and "DAZ Install Manager" are trademarks of their respective owners. This project is not affiliated with or endorsed by DAZ 3D.</sub>
+[Changelog](CHANGELOG.md) · [AGPL-3.0-only license](LICENSE)

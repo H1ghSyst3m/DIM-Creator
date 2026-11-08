@@ -1,2 +1,17 @@
+/.toolchain/
+/artifacts/windows/
+/node_modules/
+/dist/
+/target/
+/src-tauri/gen/schemas/
+/.vite/
+/coverage/
+
 .venv/
+venv/
 __pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+/legacy/build/
+/legacy/dist/

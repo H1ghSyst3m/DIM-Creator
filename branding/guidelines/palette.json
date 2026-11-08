@@ -1,0 +1,35 @@
+{
+  "note": "Aus der freigegebenen Rastergrafik abgeleitete Näherungswerte (RGB/sRGB), kein offizieller Markenfarbstandard.",
+  "colors": [
+    {
+      "name": "Aqua",
+      "hex": "#1CECF5"
+    },
+    {
+      "name": "Türkis",
+      "hex": "#04AABB"
+    },
+    {
+      "name": "Mint",
+      "hex": "#17DCAD"
+    },
+    {
+      "name": "Tiefblau",
+      "hex": "#02738F"
+    },
+    {
+      "name": "Grün",
+      "hex": "#5EF198"
+    }
+  ],
+  "neutrals": [
+    {
+      "name": "Dark UI reference",
+      "hex": "#101820"
+    },
+    {
+      "name": "Light UI reference",
+      "hex": "#F5F8FA"
+    }
+  ]
+}

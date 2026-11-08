@@ -1,0 +1,22 @@
+:root {
+  --focus-width: 1px;
+  --focus-offset: 1px;
+  --focus-inset: -1px;
+  --focus-color: var(--accent);
+  --radius: 7px;
+  --list-width: 370px;
+  --inspector-width: 350px;
+  --font: "Segoe UI Variable", "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif;
+  --mono: Consolas, "SFMono-Regular", monospace;
+  font: 13px/1.45 var(--font);
+  color: var(--text);
+  background: var(--background);
+  --folder-icon: #c9b68d;
+  --backdrop: #0008;
+  --popup-shadow: 0 12px 35px #0005;
+  --drag-shadow: 0 6px 24px #0004;
+  --font-small: 11px;
+  --font-control: 12px;
+  --space-2: 8px;
+  --space-3: 12px;
+}

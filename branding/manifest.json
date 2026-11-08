@@ -1,0 +1,1025 @@
+{
+  "name": "DIM Creator v3 - brand/icon kit",
+  "date": "2026-11-04",
+  "source": {
+    "path": "source/dim-creator-approved-1024.png",
+    "sha256": "9e631efde050225da1a9803ae8aac35af3bb8708de42ea4a989e2f8aeb158855",
+    "note": "Approved logo from the earlier conversation; not redrawn"
+  },
+  "files": [
+    {
+      "path": "guidelines/brand-guidelines.md",
+      "bytes": 3762,
+      "sha256": "7bd7ab032631f2fc918fbff5b05f54b1942ca0f45089c59f105eed1e78e7312f"
+    },
+    {
+      "path": "guidelines/brand-guidelines.pdf",
+      "bytes": 882453,
+      "sha256": "6257634555a4c067fc0f5d543c615f61431cf22e26f1010038573e131e521476"
+    },
+    {
+      "path": "guidelines/palette.json",
+      "bytes": 607,
+      "sha256": "2707662e572c3a159bf04ea584fd4da5e276a370f76027816bb8c7d985dc1649"
+    },
+    {
+      "path": "installer/nsis/installer.ico",
+      "bytes": 75257,
+      "sha256": "ec218714acacee9a4176dae67a70f4d53bac7cafaefce6f4a2b37a4d48bc7647",
+      "format": "ICO",
+      "size": [
+        256,
+        256
+      ],
+      "layers": [
+        [
+          16,
+          16
+        ],
+        [
+          24,
+          24
+        ],
+        [
+          32,
+          32
+        ],
+        [
+          48,
+          48
+        ],
+        [
+          64,
+          64
+        ],
+        [
+          128,
+          128
+        ],
+        [
+          256,
+          256
+        ]
+      ]
+    },
+    {
+      "path": "installer/nsis/uninstaller.ico",
+      "bytes": 75257,
+      "sha256": "ec218714acacee9a4176dae67a70f4d53bac7cafaefce6f4a2b37a4d48bc7647",
+      "format": "ICO",
+      "size": [
+        256,
+        256
+      ],
+      "layers": [
+        [
+          16,
+          16
+        ],
+        [
+          24,
+          24
+        ],
+        [
+          32,
+          32
+        ],
+        [
+          48,
+          48
+        ],
+        [
+          64,
+          64
+        ],
+        [
+          128,
+          128
+        ],
+        [
+          256,
+          256
+        ]
+      ]
+    },
+    {
+      "path": "linux/hicolor/128x128/apps/dim-creator.png",
+      "bytes": 15586,
+      "sha256": "3b762511024870cdfe8c59e50d3a5a790838cd2db9c45d7dc383bfae4aacc3e4",
+      "format": "PNG",
+      "size": [
+        128,
+        128
+      ]
+    },
+    {
+      "path": "linux/hicolor/16x16/apps/dim-creator.png",
+      "bytes": 787,
+      "sha256": "7a469e42fa677c1ad803b8f995a601eb5043109a1abaeed9fa8d8b3dd932b65b",
+      "format": "PNG",
+      "size": [
+        16,
+        16
+      ]
+    },
+    {
+      "path": "linux/hicolor/24x24/apps/dim-creator.png",
+      "bytes": 1282,
+      "sha256": "ee34752ab2dc73e8b8c73ddfa52c4cca5e58ea90def6df047f38b73b1e8f60f7",
+      "format": "PNG",
+      "size": [
+        24,
+        24
+      ]
+    },
+    {
+      "path": "linux/hicolor/256x256/apps/dim-creator.png",
+      "bytes": 43393,
+      "sha256": "ec5347e1815879b5bc3d46b7ce6cab3bdbfa1cf5337ef0416bde191528450946",
+      "format": "PNG",
+      "size": [
+        256,
+        256
+      ]
+    },
+    {
+      "path": "linux/hicolor/32x32/apps/dim-creator.png",
+      "bytes": 2154,
+      "sha256": "5b1873e1558230eafa3e8a06e91ef71f62c4bb6f153aec2ecfb465b21dbdafa8",
+      "format": "PNG",
+      "size": [
+        32,
+        32
+      ]
+    },
+    {
+      "path": "linux/hicolor/48x48/apps/dim-creator.png",
+      "bytes": 3833,
+      "sha256": "ee2275d4ee6382f0a876b7a211afda4815dd7fe5261cff25a58e64a0c2e20382",
+      "format": "PNG",
+      "size": [
+        48,
+        48
+      ]
+    },
+    {
+      "path": "linux/hicolor/512x512/apps/dim-creator.png",
+      "bytes": 144568,
+      "sha256": "eccd4b229c342d1e9cbfcc2071b6bc7370f2bad7692d991391d46193d187ea3a",
+      "format": "PNG",
+      "size": [
+        512,
+        512
+      ]
+    },
+    {
+      "path": "linux/hicolor/64x64/apps/dim-creator.png",
+      "bytes": 5766,
+      "sha256": "85dcd0487cb7537cd1fd9d0f65cb8669892d1fc5117b0e99ed2393c691b67a9d",
+      "format": "PNG",
+      "size": [
+        64,
+        64
+      ]
+    },
+    {
+      "path": "linux/hicolor/96x96/apps/dim-creator.png",
+      "bytes": 10270,
+      "sha256": "40894b30d82d2527550d65dce2a050121f88beb0a32c9db2998419c9da70ddc6",
+      "format": "PNG",
+      "size": [
+        96,
+        96
+      ]
+    },
+    {
+      "path": "linux/icon-1024.png",
+      "bytes": 492816,
+      "sha256": "9e631efde050225da1a9803ae8aac35af3bb8708de42ea4a989e2f8aeb158855",
+      "format": "PNG",
+      "size": [
+        1024,
+        1024
+      ]
+    },
+    {
+      "path": "macos/AppIcon.iconset/icon_128x128.png",
+      "bytes": 15586,
+      "sha256": "3b762511024870cdfe8c59e50d3a5a790838cd2db9c45d7dc383bfae4aacc3e4",
+      "format": "PNG",
+      "size": [
+        128,
+        128
+      ]
+    },
+    {
+      "path": "macos/AppIcon.iconset/icon_128x128@2x.png",
+      "bytes": 43393,
+      "sha256": "ec5347e1815879b5bc3d46b7ce6cab3bdbfa1cf5337ef0416bde191528450946",
+      "format": "PNG",
+      "size": [
+        256,
+        256
+      ]
+    },
+    {
+      "path": "macos/AppIcon.iconset/icon_16x16.png",
+      "bytes": 787,
+      "sha256": "7a469e42fa677c1ad803b8f995a601eb5043109a1abaeed9fa8d8b3dd932b65b",
+      "format": "PNG",
+      "size": [
+        16,
+        16
+      ]
+    },
+    {
+      "path": "macos/AppIcon.iconset/icon_16x16@2x.png",
+      "bytes": 2154,
+      "sha256": "5b1873e1558230eafa3e8a06e91ef71f62c4bb6f153aec2ecfb465b21dbdafa8",
+      "format": "PNG",
+      "size": [
+        32,
+        32
+      ]
+    },
+    {
+      "path": "macos/AppIcon.iconset/icon_256x256.png",
+      "bytes": 43393,
+      "sha256": "ec5347e1815879b5bc3d46b7ce6cab3bdbfa1cf5337ef0416bde191528450946",
+      "format": "PNG",
+      "size": [
+        256,
+        256
+      ]
+    },
+    {
+      "path": "macos/AppIcon.iconset/icon_256x256@2x.png",
+      "bytes": 144568,
+      "sha256": "eccd4b229c342d1e9cbfcc2071b6bc7370f2bad7692d991391d46193d187ea3a",
+      "format": "PNG",
+      "size": [
+        512,
+        512
+      ]
+    },
+    {
+      "path": "macos/AppIcon.iconset/icon_32x32.png",
+      "bytes": 2154,
+      "sha256": "5b1873e1558230eafa3e8a06e91ef71f62c4bb6f153aec2ecfb465b21dbdafa8",
+      "format": "PNG",
+      "size": [
+        32,
+        32
+      ]
+    },
+    {
+      "path": "macos/AppIcon.iconset/icon_32x32@2x.png",
+      "bytes": 5766,
+      "sha256": "85dcd0487cb7537cd1fd9d0f65cb8669892d1fc5117b0e99ed2393c691b67a9d",
+      "format": "PNG",
+      "size": [
+        64,
+        64
+      ]
+    },
+    {
+      "path": "macos/AppIcon.iconset/icon_512x512.png",
+      "bytes": 144568,
+      "sha256": "eccd4b229c342d1e9cbfcc2071b6bc7370f2bad7692d991391d46193d187ea3a",
+      "format": "PNG",
+      "size": [
+        512,
+        512
+      ]
+    },
+    {
+      "path": "macos/AppIcon.iconset/icon_512x512@2x.png",
+      "bytes": 492816,
+      "sha256": "9e631efde050225da1a9803ae8aac35af3bb8708de42ea4a989e2f8aeb158855",
+      "format": "PNG",
+      "size": [
+        1024,
+        1024
+      ]
+    },
+    {
+      "path": "macos/icon-1024.png",
+      "bytes": 492816,
+      "sha256": "9e631efde050225da1a9803ae8aac35af3bb8708de42ea4a989e2f8aeb158855",
+      "format": "PNG",
+      "size": [
+        1024,
+        1024
+      ]
+    },
+    {
+      "path": "macos/icon.icns",
+      "bytes": 895753,
+      "sha256": "930401cd0247482be53c6296ab88dcaf732d256fc8bb06afec9d6eeabe69f66b",
+      "format": "ICNS",
+      "size": [
+        1024,
+        1024
+      ],
+      "layers": [
+        [
+          512,
+          512,
+          2
+        ],
+        [
+          512,
+          512,
+          1
+        ],
+        [
+          256,
+          256,
+          2
+        ],
+        [
+          256,
+          256,
+          1
+        ],
+        [
+          128,
+          128,
+          2
+        ],
+        [
+          128,
+          128,
+          1
+        ],
+        [
+          32,
+          32,
+          2
+        ],
+        [
+          16,
+          16,
+          2
+        ]
+      ]
+    },
+    {
+      "path": "source/dim-creator-approved-1024.png",
+      "bytes": 492816,
+      "sha256": "9e631efde050225da1a9803ae8aac35af3bb8708de42ea4a989e2f8aeb158855",
+      "format": "PNG",
+      "size": [
+        1024,
+        1024
+      ]
+    },
+    {
+      "path": "tauri/src-tauri/icons/128x128.png",
+      "bytes": 15586,
+      "sha256": "3b762511024870cdfe8c59e50d3a5a790838cd2db9c45d7dc383bfae4aacc3e4",
+      "format": "PNG",
+      "size": [
+        128,
+        128
+      ]
+    },
+    {
+      "path": "tauri/src-tauri/icons/128x128@2x.png",
+      "bytes": 43393,
+      "sha256": "ec5347e1815879b5bc3d46b7ce6cab3bdbfa1cf5337ef0416bde191528450946",
+      "format": "PNG",
+      "size": [
+        256,
+        256
+      ]
+    },
+    {
+      "path": "tauri/src-tauri/icons/32x32.png",
+      "bytes": 2154,
+      "sha256": "5b1873e1558230eafa3e8a06e91ef71f62c4bb6f153aec2ecfb465b21dbdafa8",
+      "format": "PNG",
+      "size": [
+        32,
+        32
+      ]
+    },
+    {
+      "path": "tauri/src-tauri/icons/icon.icns",
+      "bytes": 895753,
+      "sha256": "930401cd0247482be53c6296ab88dcaf732d256fc8bb06afec9d6eeabe69f66b",
+      "format": "ICNS",
+      "size": [
+        1024,
+        1024
+      ],
+      "layers": [
+        [
+          512,
+          512,
+          2
+        ],
+        [
+          512,
+          512,
+          1
+        ],
+        [
+          256,
+          256,
+          2
+        ],
+        [
+          256,
+          256,
+          1
+        ],
+        [
+          128,
+          128,
+          2
+        ],
+        [
+          128,
+          128,
+          1
+        ],
+        [
+          32,
+          32,
+          2
+        ],
+        [
+          16,
+          16,
+          2
+        ]
+      ]
+    },
+    {
+      "path": "tauri/src-tauri/icons/icon.ico",
+      "bytes": 75257,
+      "sha256": "ec218714acacee9a4176dae67a70f4d53bac7cafaefce6f4a2b37a4d48bc7647",
+      "format": "ICO",
+      "size": [
+        256,
+        256
+      ],
+      "layers": [
+        [
+          16,
+          16
+        ],
+        [
+          24,
+          24
+        ],
+        [
+          32,
+          32
+        ],
+        [
+          48,
+          48
+        ],
+        [
+          64,
+          64
+        ],
+        [
+          128,
+          128
+        ],
+        [
+          256,
+          256
+        ]
+      ]
+    },
+    {
+      "path": "tauri/src-tauri/icons/icon.png",
+      "bytes": 492816,
+      "sha256": "9e631efde050225da1a9803ae8aac35af3bb8708de42ea4a989e2f8aeb158855",
+      "format": "PNG",
+      "size": [
+        1024,
+        1024
+      ]
+    },
+    {
+      "path": "tray/color/tray-16.png",
+      "bytes": 787,
+      "sha256": "7a469e42fa677c1ad803b8f995a601eb5043109a1abaeed9fa8d8b3dd932b65b",
+      "format": "PNG",
+      "size": [
+        16,
+        16
+      ]
+    },
+    {
+      "path": "tray/color/tray-20.png",
+      "bytes": 904,
+      "sha256": "49718b5e08c4f7fdc5be8475736ba1233dd9330618f3832ee5868fd2afdd042f",
+      "format": "PNG",
+      "size": [
+        20,
+        20
+      ]
+    },
+    {
+      "path": "tray/color/tray-22.png",
+      "bytes": 1091,
+      "sha256": "85050f3b468f9f5df5c9651521c558b11a419a1742f7dd3d500b78a3d37e4d52",
+      "format": "PNG",
+      "size": [
+        22,
+        22
+      ]
+    },
+    {
+      "path": "tray/color/tray-24.png",
+      "bytes": 1282,
+      "sha256": "ee34752ab2dc73e8b8c73ddfa52c4cca5e58ea90def6df047f38b73b1e8f60f7",
+      "format": "PNG",
+      "size": [
+        24,
+        24
+      ]
+    },
+    {
+      "path": "tray/color/tray-32.png",
+      "bytes": 2154,
+      "sha256": "5b1873e1558230eafa3e8a06e91ef71f62c4bb6f153aec2ecfb465b21dbdafa8",
+      "format": "PNG",
+      "size": [
+        32,
+        32
+      ]
+    },
+    {
+      "path": "tray/color/tray-44.png",
+      "bytes": 3411,
+      "sha256": "68f7791f31381e0ab53a3430bba0a1c4ce8e2ca6a68bccd079986f8033cc5935",
+      "format": "PNG",
+      "size": [
+        44,
+        44
+      ]
+    },
+    {
+      "path": "tray/color/tray-48.png",
+      "bytes": 3833,
+      "sha256": "ee2275d4ee6382f0a876b7a211afda4815dd7fe5261cff25a58e64a0c2e20382",
+      "format": "PNG",
+      "size": [
+        48,
+        48
+      ]
+    },
+    {
+      "path": "tray/color/tray-64.png",
+      "bytes": 5766,
+      "sha256": "85dcd0487cb7537cd1fd9d0f65cb8669892d1fc5117b0e99ed2393c691b67a9d",
+      "format": "PNG",
+      "size": [
+        64,
+        64
+      ]
+    },
+    {
+      "path": "tray/macos/trayTemplate.png",
+      "bytes": 487,
+      "sha256": "e3dc7f2155073e9a282b5d43b2d660dd31e771f1a3fbcd2318c02d37805a6c5c",
+      "format": "PNG",
+      "size": [
+        22,
+        22
+      ]
+    },
+    {
+      "path": "tray/macos/trayTemplate@2x.png",
+      "bytes": 1116,
+      "sha256": "eb785a8ec054c9d00f82a8006bd8d3bc05aca75412850390f5400c13ee11b598",
+      "format": "PNG",
+      "size": [
+        44,
+        44
+      ]
+    },
+    {
+      "path": "tray/template/tray-black-16.png",
+      "bytes": 355,
+      "sha256": "eff6ff62e366814896cfc02ef220116991a13beebe8563c624553418bb7f0a78",
+      "format": "PNG",
+      "size": [
+        16,
+        16
+      ]
+    },
+    {
+      "path": "tray/template/tray-black-20.png",
+      "bytes": 417,
+      "sha256": "2279b57281d71b8a6ce82daa0c0473cf6b5746b1ff66970f1b04d499c35e6b55",
+      "format": "PNG",
+      "size": [
+        20,
+        20
+      ]
+    },
+    {
+      "path": "tray/template/tray-black-22.png",
+      "bytes": 487,
+      "sha256": "e3dc7f2155073e9a282b5d43b2d660dd31e771f1a3fbcd2318c02d37805a6c5c",
+      "format": "PNG",
+      "size": [
+        22,
+        22
+      ]
+    },
+    {
+      "path": "tray/template/tray-black-24.png",
+      "bytes": 546,
+      "sha256": "38318f7f2f73aa407230925e99b796e2ba0855d9ab74bd758bce6d9c8a663aa4",
+      "format": "PNG",
+      "size": [
+        24,
+        24
+      ]
+    },
+    {
+      "path": "tray/template/tray-black-32.png",
+      "bytes": 810,
+      "sha256": "28cb4f4ebd86f77ed497576f03da0267e6b7c57a36b854a9c2318fd0910a02df",
+      "format": "PNG",
+      "size": [
+        32,
+        32
+      ]
+    },
+    {
+      "path": "tray/template/tray-black-44.png",
+      "bytes": 1116,
+      "sha256": "eb785a8ec054c9d00f82a8006bd8d3bc05aca75412850390f5400c13ee11b598",
+      "format": "PNG",
+      "size": [
+        44,
+        44
+      ]
+    },
+    {
+      "path": "tray/template/tray-black-48.png",
+      "bytes": 1170,
+      "sha256": "276af3fb8ecc4ea809c4ad7558824ddf97971e29d6f8a293a9736dc474f46838",
+      "format": "PNG",
+      "size": [
+        48,
+        48
+      ]
+    },
+    {
+      "path": "tray/template/tray-white-16.png",
+      "bytes": 390,
+      "sha256": "f8a7610e65f9c60b71c1e3fa78c5042585638a5d806c6aff16dbf6a0f27f8db1",
+      "format": "PNG",
+      "size": [
+        16,
+        16
+      ]
+    },
+    {
+      "path": "tray/template/tray-white-20.png",
+      "bytes": 471,
+      "sha256": "096562cff587f03554a8c52c326417f33d9a2a9e02767e9cddf180b622deb93f",
+      "format": "PNG",
+      "size": [
+        20,
+        20
+      ]
+    },
+    {
+      "path": "tray/template/tray-white-22.png",
+      "bytes": 528,
+      "sha256": "c65ddf2430a13fd35af374dddb04eef456f1747199bf6089ab70dc99de4a112b",
+      "format": "PNG",
+      "size": [
+        22,
+        22
+      ]
+    },
+    {
+      "path": "tray/template/tray-white-24.png",
+      "bytes": 592,
+      "sha256": "be24a28d7f80693d63714555112ef01cc75fd2dccf31f4dd18e03617ea8bc562",
+      "format": "PNG",
+      "size": [
+        24,
+        24
+      ]
+    },
+    {
+      "path": "tray/template/tray-white-32.png",
+      "bytes": 856,
+      "sha256": "39e38c736cc1ef6983e17477bd598b694cdacaccc5e2ec43e91d03b4513db710",
+      "format": "PNG",
+      "size": [
+        32,
+        32
+      ]
+    },
+    {
+      "path": "tray/template/tray-white-44.png",
+      "bytes": 1234,
+      "sha256": "ebe0fc7f401197e0a10f249b6da8a2f07a242e6bd95281eb2b8e13c47e45f40c",
+      "format": "PNG",
+      "size": [
+        44,
+        44
+      ]
+    },
+    {
+      "path": "tray/template/tray-white-48.png",
+      "bytes": 1269,
+      "sha256": "8154d6d711505a2d39ed3ac840c845d861233598374a20ecf83c7492f38e2fd9",
+      "format": "PNG",
+      "size": [
+        48,
+        48
+      ]
+    },
+    {
+      "path": "tray/windows/tray.ico",
+      "bytes": 8126,
+      "sha256": "6a17f8cf4d76deac04159bdbf027e40d0352b037f1b1f7c8cd36d56854aba871",
+      "format": "ICO",
+      "size": [
+        48,
+        48
+      ],
+      "layers": [
+        [
+          16,
+          16
+        ],
+        [
+          24,
+          24
+        ],
+        [
+          32,
+          32
+        ],
+        [
+          48,
+          48
+        ]
+      ]
+    },
+    {
+      "path": "web/favicon-16x16.png",
+      "bytes": 787,
+      "sha256": "7a469e42fa677c1ad803b8f995a601eb5043109a1abaeed9fa8d8b3dd932b65b",
+      "format": "PNG",
+      "size": [
+        16,
+        16
+      ]
+    },
+    {
+      "path": "web/favicon-192x192.png",
+      "bytes": 27964,
+      "sha256": "fba680db29d22fffc3a4b23cf72e76138e4d8e06d8bcd301e448b688ace39567",
+      "format": "PNG",
+      "size": [
+        192,
+        192
+      ]
+    },
+    {
+      "path": "web/favicon-32x32.png",
+      "bytes": 2154,
+      "sha256": "5b1873e1558230eafa3e8a06e91ef71f62c4bb6f153aec2ecfb465b21dbdafa8",
+      "format": "PNG",
+      "size": [
+        32,
+        32
+      ]
+    },
+    {
+      "path": "web/favicon-48x48.png",
+      "bytes": 3833,
+      "sha256": "ee2275d4ee6382f0a876b7a211afda4815dd7fe5261cff25a58e64a0c2e20382",
+      "format": "PNG",
+      "size": [
+        48,
+        48
+      ]
+    },
+    {
+      "path": "web/favicon-512x512.png",
+      "bytes": 144568,
+      "sha256": "eccd4b229c342d1e9cbfcc2071b6bc7370f2bad7692d991391d46193d187ea3a",
+      "format": "PNG",
+      "size": [
+        512,
+        512
+      ]
+    },
+    {
+      "path": "web/favicon-64x64.png",
+      "bytes": 5766,
+      "sha256": "85dcd0487cb7537cd1fd9d0f65cb8669892d1fc5117b0e99ed2393c691b67a9d",
+      "format": "PNG",
+      "size": [
+        64,
+        64
+      ]
+    },
+    {
+      "path": "web/favicon.ico",
+      "bytes": 56019,
+      "sha256": "afa9db88648ec8f2faa09807f840efa9d40264e963ef69746f371b53eba8f720",
+      "format": "ICO",
+      "size": [
+        256,
+        256
+      ],
+      "layers": [
+        [
+          16,
+          16
+        ],
+        [
+          32,
+          32
+        ],
+        [
+          48,
+          48
+        ],
+        [
+          64,
+          64
+        ],
+        [
+          256,
+          256
+        ]
+      ]
+    },
+    {
+      "path": "web/site.webmanifest",
+      "bytes": 366,
+      "sha256": "841f5206c2c3450e0ab4954c09188573ee5a6ae47ab2e5764cb3504a1e3f263f"
+    },
+    {
+      "path": "windows/icon-128.png",
+      "bytes": 15586,
+      "sha256": "3b762511024870cdfe8c59e50d3a5a790838cd2db9c45d7dc383bfae4aacc3e4",
+      "format": "PNG",
+      "size": [
+        128,
+        128
+      ]
+    },
+    {
+      "path": "windows/icon-16.png",
+      "bytes": 787,
+      "sha256": "7a469e42fa677c1ad803b8f995a601eb5043109a1abaeed9fa8d8b3dd932b65b",
+      "format": "PNG",
+      "size": [
+        16,
+        16
+      ]
+    },
+    {
+      "path": "windows/icon-20.png",
+      "bytes": 904,
+      "sha256": "49718b5e08c4f7fdc5be8475736ba1233dd9330618f3832ee5868fd2afdd042f",
+      "format": "PNG",
+      "size": [
+        20,
+        20
+      ]
+    },
+    {
+      "path": "windows/icon-24.png",
+      "bytes": 1282,
+      "sha256": "ee34752ab2dc73e8b8c73ddfa52c4cca5e58ea90def6df047f38b73b1e8f60f7",
+      "format": "PNG",
+      "size": [
+        24,
+        24
+      ]
+    },
+    {
+      "path": "windows/icon-256.png",
+      "bytes": 43393,
+      "sha256": "ec5347e1815879b5bc3d46b7ce6cab3bdbfa1cf5337ef0416bde191528450946",
+      "format": "PNG",
+      "size": [
+        256,
+        256
+      ]
+    },
+    {
+      "path": "windows/icon-32.png",
+      "bytes": 2154,
+      "sha256": "5b1873e1558230eafa3e8a06e91ef71f62c4bb6f153aec2ecfb465b21dbdafa8",
+      "format": "PNG",
+      "size": [
+        32,
+        32
+      ]
+    },
+    {
+      "path": "windows/icon-40.png",
+      "bytes": 2920,
+      "sha256": "14812adc70d9929430861e420250c7243f5eaeb9e99439ebf50854b1c9267738",
+      "format": "PNG",
+      "size": [
+        40,
+        40
+      ]
+    },
+    {
+      "path": "windows/icon-48.png",
+      "bytes": 3833,
+      "sha256": "ee2275d4ee6382f0a876b7a211afda4815dd7fe5261cff25a58e64a0c2e20382",
+      "format": "PNG",
+      "size": [
+        48,
+        48
+      ]
+    },
+    {
+      "path": "windows/icon-512.png",
+      "bytes": 144568,
+      "sha256": "eccd4b229c342d1e9cbfcc2071b6bc7370f2bad7692d991391d46193d187ea3a",
+      "format": "PNG",
+      "size": [
+        512,
+        512
+      ]
+    },
+    {
+      "path": "windows/icon-64.png",
+      "bytes": 5766,
+      "sha256": "85dcd0487cb7537cd1fd9d0f65cb8669892d1fc5117b0e99ed2393c691b67a9d",
+      "format": "PNG",
+      "size": [
+        64,
+        64
+      ]
+    },
+    {
+      "path": "windows/icon-96.png",
+      "bytes": 10270,
+      "sha256": "40894b30d82d2527550d65dce2a050121f88beb0a32c9db2998419c9da70ddc6",
+      "format": "PNG",
+      "size": [
+        96,
+        96
+      ]
+    },
+    {
+      "path": "windows/icon.ico",
+      "bytes": 75257,
+      "sha256": "ec218714acacee9a4176dae67a70f4d53bac7cafaefce6f4a2b37a4d48bc7647",
+      "format": "ICO",
+      "size": [
+        256,
+        256
+      ],
+      "layers": [
+        [
+          16,
+          16
+        ],
+        [
+          24,
+          24
+        ],
+        [
+          32,
+          32
+        ],
+        [
+          48,
+          48
+        ],
+        [
+          64,
+          64
+        ],
+        [
+          128,
+          128
+        ],
+        [
+          256,
+          256
+        ]
+      ]
+    }
+  ]
+}
