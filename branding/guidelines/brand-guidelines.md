@@ -1,68 +1,68 @@
 # DIM Creator v3 · Mini Brand Guidelines
 
-**Stand:** 04.11.2026 · **Asset:** freigegebenes Aqua-/Türkis-Signet mit transparentem Hintergrund.
+**Updated 2026-11-04** · Approved aqua and turquoise mark on a transparent background.
 
-## 1. Logo und Identität
+## 1. Logo and Identity
 
-Das primäre Markenasset ist **ausschließlich das Signet**. Es enthält keinen Schriftzug und keine Hintergrundkachel. Das Logo soll in Windows, macOS und Linux dieselbe Form behalten. Die OS-spezifischen Dateien sind **technische Exporte**, keine unterschiedlichen Markendesigns.
+Use **the mark on its own** as the primary brand asset. Keep it free of lettering and background tiles. Use the same shape on Windows, macOS, and Linux. The platform-specific files are **exports of the same mark**.
 
-## 2. Farbe
+## 2. Color
 
-Die folgenden HEX-Werte sind aus dem genehmigten PNG angenähert; das Original verwendet Farbverläufe und Übergänge.
+These HEX values approximate colors in the approved PNG. The original uses gradients and blended transitions.
 
-| Name | HEX | Einsatz |
+| Name | HEX | Use |
 |---|---|---|
-| Aqua | `#1CECF5` | Leuchtendes Highlight, Signet |
-| Türkis | `#04AABB` | Primärer mittlerer Farbton |
-| Mint | `#17DCAD` | Verbindungsflächen, sekundärer Akzent |
-| Tiefblau | `#02738F` | Tiefe und Kontrast im Signet |
-| Grün | `#5EF198` | Zweiter heller Akzent |
+| Aqua | `#1CECF5` | Bright highlight in the mark |
+| Turquoise | `#04AABB` | Primary midtone |
+| Mint | `#17DCAD` | Connecting areas and a secondary accent |
+| Deep Blue | `#02738F` | Depth and contrast in the mark |
+| Green | `#5EF198` | Second bright accent |
 
-**Neutralflächen für Präsentation, keine im Logo eingebauten Hintergründe:** Dunkel `#101820`, Hell `#F5F8FA`.
+For presentations, use `#101820` for dark backgrounds and `#F5F8FA` for light backgrounds. Keep the mark itself transparent.
 
-## 3. Größen und Schutzzone
+## 3. Sizes and Clear Space
 
-- Master: 1024×1024, RGBA, sRGB-orientiert, transparenter Hintergrund.
-- App-/Installer-Icon: Multi-Size Windows ICO, klassisches macOS ICNS, Linux PNGs.
-- Für 16–32 px werden die proportional **optisch skalierte** Ausgaben mit geringfügig kleinerem Leerraum verwendet.
-- Empfehlung: Mindestens 10 % Schutzzone **außerhalb** der sichtbaren Symbolkante zu benachbarten Elementen. Das ist ein Gestaltungstipp, keine offizielle technische Norm.
-- Kleine Größen im echten Betriebssystem testen. Falls das Signet dort zu viele innere Details verliert, eine separate *Micro-Icon-Optimierung* erst nach Abnahme vornehmen, nicht automatisch ein anderes Logo erstellen.
+- The 1024×1024 RGBA master is intended for sRGB and has a transparent background.
+- Use a multi-resolution ICO on Windows, a classic ICNS on macOS, and PNGs on Linux for app and installer icons.
+- At 16–32 px, use the **optically scaled** exports. These preserve the mark's proportions with slightly less padding.
+- As design guidance, leave at least 10% clear space **outside** the visible edge of the mark before placing adjacent elements.
+- Test small icons on the target operating system. If the mark loses too much detail, get approval before preparing a separate version optimized for small sizes.
 
-## 4. Verwendung
+## 4. Usage
 
 **Do**
 
-- Die freigegebene, unveränderte Silhouette verwenden.
-- Proportional skalieren und ausreichend Raum lassen.
-- Transparenz erhalten.
-- In Light/Dark und auf Taskleiste/Dock testen.
-- Auf dieselbe Datei für App und Installer zurückgreifen.
+- Use the approved silhouette as supplied.
+- Scale proportionally and leave enough clear space.
+- Preserve transparency.
+- Test in light and dark modes and on the taskbar and Dock.
+- Use the same file for the app and installer.
 
-**Don't**
+**Avoid**
 
-- Kein Text „DIM Creator“ in das Symbol einbauen.
-- Keine Pfeile, Ringe, Kacheln, Konturen oder Versandkartons hinzufügen.
-- Nicht strecken, kippen, drehen oder Spiegeln.
-- Keine beliebigen neuen Verlaufsfarben erzeugen.
-- Keine JPEG-Datei ohne Transparenz als App-Icon verwenden.
+- Adding the words “DIM Creator” to the mark.
+- Adding arrows, rings, tiles, outlines, or shipping boxes.
+- Stretching, tilting, rotating, or mirroring the mark.
+- Introducing arbitrary new gradient colors.
+- Using an opaque JPEG for the app icon.
 
-## 5. Technische Ausgaben
+## 5. Technical Exports
 
-| Plattform/Verwendung | Datei | Bemerkung |
+| Platform or Use | File | Notes |
 |---|---|---|
-| Windows App/NSIS | `tauri/src-tauri/icons/icon.ico` | Multi-Resolution, 16/24/32/48/64/128/256 |
-| macOS | `tauri/src-tauri/icons/icon.icns` | Klassisches ICNS, mehrere Auflösungen |
-| Linux | `linux/hicolor/*/apps/dim-creator.png` | PNGs nach Hicolor-Struktur |
-| Tauri | `tauri/src-tauri/icons/` | Standardnamen und Struktur |
-| Website | `web/favicon.ico` / `favicon-32x32.png` | Kein Text im Icon |
-| Windows-/Linux-Tray | `tray/color/tray-24.png` | Nur falls Tray eingesetzt wird |
-| macOS-Tray | `tray/macos/trayTemplate.png`, `trayTemplate@2x.png` | Template-Icon, systemseitige Einfärbung |
-| Installer | `installer/nsis/installer.ico` | Identisches Markenlogo, kein zweites Design |
+| Windows app / NSIS | `tauri/src-tauri/icons/icon.ico` | Multi-resolution ICO, 16/24/32/48/64/128/256 |
+| macOS | `tauri/src-tauri/icons/icon.icns` | Classic ICNS with multiple resolutions |
+| Linux | `linux/hicolor/*/apps/dim-creator.png` | PNGs organized in the Hicolor directory structure |
+| Tauri | `tauri/src-tauri/icons/` | Standard filenames and directory structure |
+| Website | `web/favicon.ico` / `favicon-32x32.png` | Mark only |
+| Windows/Linux tray | `tray/color/tray-24.png` | Use when the app has a tray icon |
+| macOS tray | `tray/macos/trayTemplate.png`, `trayTemplate@2x.png` | Template icon with system tinting |
+| Installer | `installer/nsis/installer.ico` | Same brand mark as the app |
 
-## 6. Plattformhinweis
+## 6. Platform Guidance
 
-Eine passende ICO-/ICNS-Datei ist **keine Garantie**, dass die endgültige App den jeweiligen aktuellen Plattformdesignrichtlinien vollständig entspricht. Für macOS muss vor Veröffentlichung Dock, Finder, Systemmaskierung und gegebenenfalls Icon Composer geprüft werden. Der eigenständige Marken-Asset bleibt transparent und unverändert.
+Review the finished app against the current platform design guidelines, including its ICO or ICNS file. Before releasing on macOS, check the icon in the Dock and Finder, verify system masking, and review it in Icon Composer where applicable. Keep the standalone brand asset transparent and use the approved artwork as supplied.
 
-## 7. Herkunft
+## 7. Source
 
-Basis ist das von dir freigegebene `DIM-Creator-Logo-v3/icon.png` aus der vorherigen Freigabe. Kein neues Logo erstellt. Ausgabebildgrößen sind technisch exportiert; die exakten Farben des Originals bleiben in den Farbgrafiken enthalten. Die monochromen Tray-Dateien entstehen aus dessen Alpha-Silhouette.
+The exports use the approved `DIM-Creator-Logo-v3/icon.png` as their source. The color assets retain the original colors at each export size. The monochrome tray assets use the source image's alpha silhouette.

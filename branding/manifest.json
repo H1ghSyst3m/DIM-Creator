@@ -9,18 +9,18 @@
   "files": [
     {
       "path": "guidelines/brand-guidelines.md",
-      "bytes": 3762,
-      "sha256": "7bd7ab032631f2fc918fbff5b05f54b1942ca0f45089c59f105eed1e78e7312f"
+      "bytes": 3437,
+      "sha256": "aef5b7993b023dbd8239fff01224e22fa5aaefbfce5a6dcb2811f2e420c9a27f"
     },
     {
       "path": "guidelines/brand-guidelines.pdf",
-      "bytes": 882453,
-      "sha256": "6257634555a4c067fc0f5d543c615f61431cf22e26f1010038573e131e521476"
+      "bytes": 881662,
+      "sha256": "177d655c62ab2a76ef9049ebf7dc87d43b84c3153302ae20a22d26b44ff0baf0"
     },
     {
       "path": "guidelines/palette.json",
-      "bytes": 607,
-      "sha256": "2707662e572c3a159bf04ea584fd4da5e276a370f76027816bb8c7d985dc1649"
+      "bytes": 587,
+      "sha256": "0e5f05d2a26c18d3e188e37e59869cb775f17718f2f8a7da2be313026d18076b"
     },
     {
       "path": "installer/nsis/installer.ico",

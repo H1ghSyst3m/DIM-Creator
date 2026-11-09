@@ -1,12 +1,12 @@
 {
-  "note": "Aus der freigegebenen Rastergrafik abgeleitete Näherungswerte (RGB/sRGB), kein offizieller Markenfarbstandard.",
+  "note": "Approximate RGB/sRGB values derived from the approved raster artwork for reference only.",
   "colors": [
     {
       "name": "Aqua",
       "hex": "#1CECF5"
     },
     {
-      "name": "Türkis",
+      "name": "Turquoise",
       "hex": "#04AABB"
     },
     {
@@ -14,11 +14,11 @@
       "hex": "#17DCAD"
     },
     {
-      "name": "Tiefblau",
+      "name": "Deep Blue",
       "hex": "#02738F"
     },
     {
-      "name": "Grün",
+      "name": "Green",
       "hex": "#5EF198"
     }
   ],
