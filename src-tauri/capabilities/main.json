@@ -8,6 +8,7 @@
     "core:window:allow-destroy",
     "core:window:allow-set-always-on-top",
     "dialog:allow-open",
+    "opener:allow-reveal-item-in-dir",
     { "identifier": "opener:allow-open-url", "allow": [
       { "url": "https://github.com/H1ghSyst3m/DIM-Creator" },
       { "url": "https://github.com/H1ghSyst3m/DIM-Creator/**" }

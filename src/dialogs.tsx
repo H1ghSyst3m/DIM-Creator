@@ -373,6 +373,15 @@ export function ExportProgress({ rows, event, results, cancelling, error, t, onC
   onClose: () => void
   onCancel: () => void
 }) {
+  const [revealing, setRevealing] = useState(false)
+  const [revealError, setRevealError] = useState<{ id: string; error: unknown }>()
+  const reveal = async (id: string, path: string) => {
+    setRevealing(true)
+    setRevealError(undefined)
+    try { await api.revealExport(path) }
+    catch (error) { setRevealError({ id, error }) }
+    finally { setRevealing(false) }
+  }
   const name = (id: string | null | undefined) => rows.find(row => row.id === id)?.name || t('unnamed')
   return <Modal title={t(results ? 'resultsTitle' : 'progressTitle')} t={t} onClose={results ? onClose : undefined} wide footer={
     results ? <button type="button" onClick={onClose}>{t('close')}</button> :
@@ -382,6 +391,11 @@ export function ExportProgress({ rows, event, results, cancelling, error, t, onC
       <div><strong>{name(result.id)}</strong>
         {result.path && <p className="mono">{result.path}</p>}
         {result.message && <p className={result.status === 'failed' ? 'error' : 'muted'}>{errorText(result.message, t)}</p>}
+        {result.status === 'success' && result.path && <p><button type="button" className="ghost small" disabled={revealing}
+          aria-label={t('showPackageInExplorer', { name: name(result.id) })} onClick={() => void reveal(result.id, result.path!)}>
+          <Icon name="external" />{t('showInExplorer')}
+        </button></p>}
+        {revealError?.id === result.id && <p className="error" role="alert">{errorText(revealError.error, t)}</p>}
       </div>
       <span className={result.status === 'success' ? 'success' : result.status === 'failed' ? 'error' : 'muted'}>{t(resultMessages[result.status])}</span>
     </li>)}</ul> : <>

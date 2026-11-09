@@ -467,6 +467,8 @@ export const en = {
   "progressTitle": "Building packages",
   "cancelling": "Cancellation requested …",
   "resultsTitle": "Export results",
+  "showInExplorer": "Show in Explorer",
+  "showPackageInExplorer": "Show in Explorer: {name}",
   "resultSuccess": "Built",
   "resultFailed": "Failed",
   "resultCancelled": "Cancelled",

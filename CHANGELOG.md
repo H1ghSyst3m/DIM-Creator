@@ -2,6 +2,12 @@
 
 [Release notes for the Python version](legacy/CHANGELOG.md)
 
+## [Unreleased]
+
+### Added
+
+- Added a **Show in Explorer** button to the export results. It opens the output folder and selects the exported ZIP.
+
 ## [3.0.0]
 
 DIM Creator 3.0 is a complete rewrite of the Python/PySide6 app. The new workspace takes you from a folder of DAZ files or a set of downloads to finished packages for DAZ Install Manager.

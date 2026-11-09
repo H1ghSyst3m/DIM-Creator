@@ -1,7 +1,7 @@
 import { Channel, invoke } from '@tauri-apps/api/core'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { open } from '@tauri-apps/plugin-dialog'
-import { openUrl } from '@tauri-apps/plugin-opener'
+import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener'
 
 export type * from './bindings'
 import type { AppError, SettingsIssue, WorkspaceView, Package, Settings, FileEntry, CopyConflict, CopyPolicy, TransferMode, FileMutation, Preview as BackendPreview, OutputDirectory, OutputContext, ExportTarget, ExportPreflight, ExportApproval, JobEvent, Update } from './bindings'
@@ -58,6 +58,7 @@ export const api = {
     return invoke<string>('start_export', { context, targets, replace, onEvent: channel })
   },
   cancelExport: (jobId: string) => invoke<void>('cancel_export', { jobId }),
+  revealExport: (path: string): Promise<void> => revealItemInDir(path),
   checkUpdates: () => invoke<Update | null>('check_updates'),
   chooseOutput: (title: string) => open({ directory: true, title }),
   chooseSources: (title: string, directory: boolean) => open({ title, directory, multiple: true }),

@@ -467,6 +467,8 @@ export const de = {
   "progressTitle": "Pakete werden erstellt",
   "cancelling": "Abbruch angefordert …",
   "resultsTitle": "Exportergebnisse",
+  "showInExplorer": "Im Explorer anzeigen",
+  "showPackageInExplorer": "Im Explorer anzeigen: {name}",
   "resultSuccess": "Erstellt",
   "resultFailed": "Fehlgeschlagen",
   "resultCancelled": "Abgebrochen",
